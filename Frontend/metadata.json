@@ -1,0 +1,5 @@
+{
+  "name": "AI Agent Manager",
+  "description": "A sleek, dark/light mode capable chat interface with rename and delete functionality, powered by Google Gemini.",
+  "requestFramePermissions": []
+}
