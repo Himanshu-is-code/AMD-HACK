@@ -42,23 +42,25 @@ export async function getTask(taskId: string) {
     }
 }
 
-export async function resumeTask(taskId: string, apiKey: string) {
+export async function completeTask(taskId: string, planUpdate: string, sources: any[]) {
     try {
-        const res = await fetch(`${AGENT_URL}/tasks/${taskId}/resume`, {
+        const res = await fetch(`${AGENT_URL}/tasks/${taskId}/complete`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json"
             },
-            body: JSON.stringify({ api_key: apiKey })
+            body: JSON.stringify({ plan_update: planUpdate, sources: sources })
         });
         if (!res.ok) {
-            throw new Error(`Failed to resume task: ${res.status}`);
+            throw new Error(`Failed to complete task: ${res.status}`);
         }
         return res.json();
     } catch (error) {
-        console.error("Error resuming task:", error);
+        console.error("Error completing task:", error);
         return null;
     }
 }
+
+
 
 

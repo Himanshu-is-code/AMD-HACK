@@ -36,6 +36,7 @@ class Task(BaseModel):
     status: str # planned | waiting_for_internet | executing | completed
     requires_internet: bool = False
     model_used: str = FAST_MODEL
+    sources: Optional[List[dict]] = []
 
 class ResumeRequest(BaseModel):
     api_key: str
@@ -101,29 +102,10 @@ def call_ollama(prompt: str, model: str = FAST_MODEL):
     except Exception as e:
         return f"Error: Unexpected error calling Ollama: {str(e)}"
 
-def resume_task_simulation(task_id: str, original_request: str, api_key: str):
-    """Resumes a paused task using Gemini for internet search"""
-    print(f"Resuming task {task_id} with Gemini...")
-    update_task_status(task_id, "executing")
-    
-    try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-3-flash-preview')
-        
-        # Simple prompt upgrade to encourage search-like behavior
-        prompt = f"Answer this request using your internal knowledge (simulating a search): {original_request}"
-        response = model.generate_content(prompt)
-        
-        if response.candidates and response.candidates[0].content.parts:
-            generated_text = response.text
-        else:
-            generated_text = f"Search completed but no text returned. Finish reason: {response.candidates[0].finish_reason if response.candidates else 'Unknown'}"
-        
-        update_task_status(task_id, "completed", plan_update=generated_text)
-        
-    except Exception as e:
-        print(f"Gemini Error: {e}")
-        update_task_status(task_id, "completed", plan_update=f"Error during search: {str(e)}")
+
+# Search service removed
+
+
 
 
 def background_task_simulation(task_id: str, requires_internet: bool):
@@ -190,16 +172,27 @@ def agent(input: UserInput, background_tasks: BackgroundTasks):
 
 @app.post("/tasks/{task_id}/resume")
 def resume_task(task_id: str, req: ResumeRequest, background_tasks: BackgroundTasks):
+    # This endpoint is kept for compatibility but effectively deprecated for search
+    return {"status": "deprecated", "message": "Search is now handled client-side"}
+
+class CompleteTaskRequest(BaseModel):
+    plan_update: str
+    sources: Optional[List[dict]] = []
+
+@app.post("/tasks/{task_id}/complete")
+def complete_task(task_id: str, req: CompleteTaskRequest):
+    update_task_status(task_id, "completed", plan_update=req.plan_update)
+    
+    # Update sources if provided
     tasks = load_tasks()
-    task = next((t for t in tasks if t["id"] == task_id), None)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    if task["status"] == "waiting_for_internet":
-        background_tasks.add_task(resume_task_simulation, task_id, task["original_request"], req.api_key)
-        return {"status": "resuming"}
-    
-    return {"status": "ignored", "reason": "Task not in waiting state"}
+    for task in tasks:
+        if task["id"] == task_id:
+            if req.sources:
+                task["sources"] = req.sources
+            save_task(task)
+            break
+            
+    return {"status": "success"}
 
 @app.get("/tasks")
 def get_tasks():

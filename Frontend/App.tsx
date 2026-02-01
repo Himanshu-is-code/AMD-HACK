@@ -68,7 +68,8 @@ const App: React.FC = () => {
                     const updatedMsgs = [...c.messages];
                     updatedMsgs[updatedMsgs.length - 1] = {
                       ...lastMsg,
-                      content: fetchedTask.plan // The plan contains the final result
+                      content: fetchedTask.plan, // The plan contains the final result
+                      sources: fetchedTask.sources // Attach sources from backend
                     };
                     return { ...c, messages: updatedMsgs };
                   }
@@ -222,6 +223,122 @@ const App: React.FC = () => {
 
   const currentChat = chats.find(c => c.id === currentChatId);
 
+  const handleResumeWithGemini = async () => {
+    if (!currentChatId || !activeTaskId) return;
+
+    // Get query from chat history (last user message)
+    const chat = chats.find(c => c.id === currentChatId);
+    if (!chat) return;
+
+    const lastUserMsg = [...chat.messages].reverse().find(m => m.role === Role.USER);
+    const query = lastUserMsg?.content;
+
+    if (!query) return;
+
+    setIsLoading(true);
+
+    try {
+      // Import dynamically to avoid SSR issues if any, or just standard import
+      const { GoogleGenAI } = await import("@google/genai");
+
+      const apiKey = process.env.API_KEY || import.meta.env.VITE_GEMINI_API_KEY;
+      const ai = new GoogleGenAI({ apiKey });
+
+      const result = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: query,
+        config: {
+          tools: [{ googleSearch: {} }]
+        }
+      });
+      const response = result;
+      const text = response.text || ""; // SDK might return text directly strictly or via method?
+      // In snippet: const response = await ai.models.generateContent(...) -> response.text gives text?
+      // Snippet says: const analysisResult = JSON.parse(response.text)
+      // So response.text is a STRING property? Or a method?
+      // Inspecting snippet: `const aiResponse = response.text;`
+      // So it is a property.
+
+      // Extract sources
+      // Snippet: const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
+      // Wait, is 'candidates' on response? The snippet uses:
+      // `const response = await chat.sendMessage(...)`
+      // `const groundingMetadata = response.candidates?.[0]?.groundingMetadata;`
+      // But for `ai.models.generateContent`, the snippet shows:
+      // `const response = await ai.models.generateContent(...)`
+      // `JSON.parse(response.text)`
+      // It doesn't show source extraction for generateContent, only for chat.sendMessage.
+      // But typically the response object structure is similar.
+      // I'll assume response.candidates exists.
+
+      const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
+      const sources: { title: string, url: string }[] = [];
+
+      if (groundingMetadata?.groundingChunks) {
+        // @ts-ignore - The SDK types might be slightly different or implicit
+        for (const chunk of groundingMetadata.groundingChunks) {
+          if (chunk.web) {
+            sources.push({ title: chunk.web.title || "", url: chunk.web.uri || "" });
+          }
+        }
+      }
+
+      // Update Chat
+      setChats(prev => prev.map(c => {
+        if (c.id === currentChatId) {
+          const updatedMsgs = [...c.messages];
+          const lastMsg = updatedMsgs[updatedMsgs.length - 1];
+
+          if (lastMsg && lastMsg.role === Role.MODEL) {
+            // Update the existing "waiting" or "plan" message
+            updatedMsgs[updatedMsgs.length - 1] = {
+              ...lastMsg,
+              content: text || (response.text as string), // handle if text is property
+              sources: sources,
+              latency: Date.now() - lastMsg.timestamp // simple delta
+            };
+          }
+          return { ...c, messages: updatedMsgs };
+        }
+        return c;
+      }));
+
+      // Notify backend that task is complete
+      if (activeTaskId) {
+        try {
+          const service = await import('./services/agentService');
+          await service.completeTask(activeTaskId, text || (response.text as string), sources);
+        } catch (e) {
+          console.error("Failed to update backend task status", e);
+        }
+      }
+
+      setActiveTaskId(null); // Stop polling backend
+      setActiveTaskStatus('completed');
+
+    } catch (err: any) {
+      console.error("Gemini Search Error:", err);
+      // Update chat with error
+      setChats(prev => prev.map(c => {
+        if (c.id === currentChatId) {
+          const updatedMsgs = [...c.messages];
+          const lastMsg = updatedMsgs[updatedMsgs.length - 1];
+          if (lastMsg) {
+            updatedMsgs[updatedMsgs.length - 1] = {
+              ...lastMsg,
+              content: `Error performing search: ${err.message || "Unknown error"}`
+            };
+          }
+          return { ...c, messages: updatedMsgs };
+        }
+        return c;
+      }));
+      setActiveTaskId(null);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   return (
     <div className="flex h-screen w-full bg-white dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 font-sans">
       <Sidebar
@@ -253,6 +370,7 @@ const App: React.FC = () => {
           activeTaskStatus={activeTaskStatus}
           activeTaskId={activeTaskId}
           apiKey={import.meta.env.VITE_GEMINI_API_KEY || ""}
+          onResumeWithGemini={handleResumeWithGemini}
         />
       </div>
     </div>

@@ -9,6 +9,7 @@ export interface Message {
   content: string;
   timestamp: number;
   latency?: number;
+  sources?: { title: string, url: string }[];
 }
 
 export interface ChatSession {
@@ -37,4 +38,5 @@ export interface Task {
   original_request: string;
   plan: string;
   status: 'planned' | 'waiting_for_internet' | 'executing' | 'completed';
+  sources?: { title: string, url: string }[];
 }

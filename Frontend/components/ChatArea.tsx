@@ -1,5 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { Paperclip, PanelLeft, Bot, ListTodo, Settings, UserCircle, Plus, Search, LayoutGrid, Clock, MinusCircle, Calendar, HardDrive, Mail, StickyNote, TrendingUp, Move, Lock, EyeOff, GripVertical } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { Message, Role } from '../types';
 import { ClockWidget } from './ClockWidget';
 import { CalendarWidget } from './CalendarWidget';
@@ -18,6 +20,7 @@ interface ChatAreaProps {
     activeTaskStatus: string | null;
     activeTaskId: string | null;
     apiKey: string;
+    onResumeWithGemini?: () => Promise<void>;
 }
 
 interface WidgetInstance {
@@ -48,7 +51,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     isLoading,
     activeTaskStatus,
     activeTaskId,
-    apiKey
+    apiKey,
+    onResumeWithGemini
 }) => {
     const [inputValue, setInputValue] = useState('');
     const [isFocused, setIsFocused] = useState(false);
@@ -102,14 +106,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     };
 
     const handleResumeTask = async () => {
-        if (!activeTaskId || !apiKey) return;
-        setIsResuming(true);
-        try {
-            const service = await import('../services/agentService');
-            await service.resumeTask(activeTaskId, apiKey);
-        } catch (e) {
-            console.error("Resume failed", e);
-        } finally {
+        if (onResumeWithGemini) {
+            setIsResuming(true);
+            await onResumeWithGemini();
             setIsResuming(false);
         }
     };
@@ -432,7 +431,27 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         {messages.map((msg, index) => (
                             <div key={msg.id} className={`flex gap-4 ${msg.role === Role.USER ? 'justify-end' : 'justify-start'}`}>
                                 <div className={`max-w-[85%] rounded-2xl px-5 py-3.5 leading-relaxed whitespace-pre-wrap shadow-sm ${msg.role === Role.USER ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100' : 'bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 text-zinc-800 dark:text-zinc-200'}`}>
-                                    {msg.content}
+                                    <ReactMarkdown
+                                        remarkPlugins={[remarkGfm]}
+                                        components={{
+                                            p: ({ node, ...props }) => <p className="mb-2 last:mb-0" {...props} />,
+                                            a: ({ node, ...props }) => <a className="text-blue-500 hover:underline" target="_blank" rel="noopener noreferrer" {...props} />,
+                                            ul: ({ node, ...props }) => <ul className="list-disc pl-4 mb-2" {...props} />,
+                                            ol: ({ node, ...props }) => <ol className="list-decimal pl-4 mb-2" {...props} />,
+                                            li: ({ node, ...props }) => <li className="mb-1" {...props} />,
+                                            h1: ({ node, ...props }) => <h1 className="text-xl font-bold mb-3 mt-4 first:mt-0" {...props} />,
+                                            h2: ({ node, ...props }) => <h2 className="text-lg font-bold mb-2 mt-3 first:mt-0" {...props} />,
+                                            h3: ({ node, ...props }) => <h3 className="text-base font-bold mb-2 mt-2" {...props} />,
+                                            code: ({ node, ...props }) => <code className="bg-zinc-200 dark:bg-zinc-700 px-1.5 py-0.5 rounded text-xs font-mono text-pink-600 dark:text-pink-400" {...props} />,
+                                            pre: ({ node, ...props }) => <pre className="bg-zinc-900 text-zinc-100 p-3 rounded-lg overflow-x-auto mb-3 text-xs font-mono" {...props} />,
+                                            blockquote: ({ node, ...props }) => <blockquote className="border-l-4 border-zinc-300 dark:border-zinc-700 pl-4 py-1 italic text-zinc-600 dark:text-zinc-400 mb-2" {...props} />,
+                                            table: ({ node, ...props }) => <div className="overflow-x-auto mb-3"><table className="min-w-full divide-y divide-zinc-200 dark:divide-zinc-700 border border-zinc-200 dark:border-zinc-700 rounded-lg" {...props} /></div>,
+                                            th: ({ node, ...props }) => <th className="px-3 py-2 bg-zinc-100 dark:bg-zinc-800 text-left text-xs font-medium text-zinc-500 dark:text-zinc-400 uppercase tracking-wider" {...props} />,
+                                            td: ({ node, ...props }) => <td className="px-3 py-2 whitespace-nowrap text-sm text-zinc-700 dark:text-zinc-300 border-t border-zinc-200 dark:border-zinc-700" {...props} />,
+                                        }}
+                                    >
+                                        {msg.content}
+                                    </ReactMarkdown>
                                     {msg.latency && <div className="text-[10px] text-zinc-400 mt-2 text-right">{(msg.latency / 1000).toFixed(1)}s</div>}
 
                                     {/* Resume Button inside Bubble */}
@@ -451,6 +470,40 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                                                 <span>Search Web with Gemini</span>
                                             </button>
                                             <p className="text-[10px] text-zinc-500 mt-2 text-center">This action requires internet access.</p>
+                                        </div>
+                                    )}
+
+                                    {/* Display Sources */}
+                                    {msg.sources && msg.sources.length > 0 && (
+                                        <div className="mt-4 pt-3 border-t border-zinc-200 dark:border-zinc-800">
+                                            <div className="flex items-center gap-2 mb-2 text-xs font-semibold text-zinc-500 uppercase tracking-wider">
+                                                <Search className="w-3 h-3" />
+                                                <span>SOURCES</span>
+                                            </div>
+                                            <div className="flex flex-wrap gap-2">
+                                                {msg.sources.map((source, idx) => {
+                                                    let hostname = "";
+                                                    try {
+                                                        hostname = new URL(source.url).hostname.replace('www.', '');
+                                                    } catch (e) {
+                                                        hostname = source.url;
+                                                    }
+                                                    return (
+                                                        <a
+                                                            key={idx}
+                                                            href={source.url}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className="flex items-center gap-2 pl-1 pr-3 py-1.5 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-full text-xs text-zinc-700 dark:text-zinc-300 transition-colors border border-zinc-200 dark:border-zinc-700"
+                                                        >
+                                                            <div className="w-4 h-4 rounded-full bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-400 flex items-center justify-center text-[10px] font-bold">
+                                                                {idx + 1}
+                                                            </div>
+                                                            <span className="truncate max-w-[150px] font-medium">{hostname}</span>
+                                                        </a>
+                                                    );
+                                                })}
+                                            </div>
                                         </div>
                                     )}
                                 </div>
