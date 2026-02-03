@@ -18,6 +18,7 @@ import logging
 # Setup logging
 # Setup logging
 logging.basicConfig(
+    filename='debug.log',
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     force=True
@@ -218,7 +219,8 @@ def background_task_simulation(task_id: str, requires_internet: bool, task_text:
     
     # --- REAL ACTION EXECUTION ---
     result_update = ""
-    if "calendar" in task_text.lower() or "schedule" in task_text.lower():
+    triggers = ["calendar", "calender", "schedule", "meeting", "appointment", "event", "remind", "mark"]
+    if any(valid_trigger in task_text.lower() for valid_trigger in triggers):
         logging.info(f"Executing Calendar Action for task {task_id}")
         
         # 1. Extract Details
