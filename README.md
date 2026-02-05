@@ -1,89 +1,33 @@
-# offline-agent-hackathon
+# AMD Hack Agent
 
-A hybrid local AI agent that dynamically routes tasks between a fast model (`llama3.2:1b`) and a smart model (`qwen3:4b`) for optimal performance on AMD hardware.
+A local-first, privacy-focused AI agent with offline capabilities.
 
-## Prerequisites
+## Recent Updates (Feb 2026)
 
-- **Python 3.10+**
-- **Node.js 18+**
-- **Ollama**: Installed and running locally.
+### 🚀 Offline Capability
+- **Queue System**: Tasks created while offline are queued and automatically executed when internet connectivity is restored.
+- **Resiliency**: Networking errors are caught and retried without crashing the application.
+
+### 🔍 "Search with Gemini"
+- **Context-Aware**: The search button appears intelligently when you discuss news, weather, or stocks.
+- **Date Intelligence**: Search queries automatically include the current date and day for accurate results.
+- **Privacy**: Search is only triggered manually. All other tasks (reminders, notes) run on your local device (Ollama).
+
+### 🛡️ Privacy & Security
+- **Local-First**: Calendar interactions, planning, and task execution happen locally.
+- **No Data Leaks**: Google Gemini is only accessed for explicit web searches.
 
 ## Setup
 
-### 1. Configure Models
-Ensure you have the required models pulled in Ollama:
-
-```bash
-ollama pull llama3.2:1b
-ollama pull qwen3:4b
-```
-
-## Useful Ollama Commands
-
-Use these commands to manage and verify your local models:
-
-*   **List installed models**:
+1.  **Backend**:
     ```bash
-    ollama list
+    cd agent-backend
+    python main.py
     ```
-    *Check if `llama3.2:1b` and `qwen3:4b` are present.*
-
-*   **Test a model interactively**:
+2.  **Frontend**:
     ```bash
-    ollama run llama3.2:1b
+    cd frontend
+    npm run dev
     ```
-    *Starts a chat session with the model. Type `/bye` to exit.*
 
-*   **Check Ollama server status**:
-    *   Open `http://localhost:11434` in your browser. You should see "Ollama is running".
-
-### 2. Backend Setup
-Navigate to the backend directory and install the required Python libraries:
-
-```bash
-cd agent-backend
-pip install fastapi uvicorn requests pydantic google-generativeai
-```
-
-### 3. Frontend Setup
-Navigate to the frontend directory and install dependencies:
-
-```bash
-cd Frontend
-npm install
-```
-
-## Running the Project
-
-### 1. Start Ollama
-Make sure Ollama is running in the background.
-
-### 2. Start Backend
-In a terminal, run the FastAPI backend:
-
-```bash
-cd agent-backend
-python main.py
-```
-*   Backend will run on: `http://localhost:8000`
-*   Swagger UI: `http://localhost:8000/docs`
-
-### 3. Start Frontend
-In a separate terminal, start the Vite development server:
-
-```bash
-cd Frontend
-npm run dev
-```
-*   Frontend will typically run on: `http://localhost:5173`
-
-## Architecture
-
-This agent uses **Pattern-Matching Model Routing**:
-*   **Fast Model (`llama3.2:1b`)**: Handles simple queries, greetings, and short interactions (< 120 chars).
-*   **Smart Model (`qwen3:4b`)**: Handles complex tasks like planning, workflows, analysis, or long requests.
-
-The routing logic is handled securely in `agent-backend/main.py`.
-
-<!-- Start Backend: Run uvicorn main:app --reload.
-Start Frontend: Run npm run dev. -->
+For a detailed log of recent changes, see [RETROSPECTIVE.md](./RETROSPECTIVE.md).

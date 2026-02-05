@@ -578,23 +578,25 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                                     {msg.latency && <div className="text-[10px] text-zinc-400 mt-2 text-right">{(msg.latency / 1000).toFixed(1)}s</div>}
 
                                     {/* Resume Button inside Bubble */}
-                                    {msg.role === Role.MODEL && index === messages.length - 1 && activeTaskStatus === 'waiting_for_internet' && (
-                                        <div className="mt-4 pt-3 border-t border-zinc-200 dark:border-zinc-800">
-                                            <button
-                                                onClick={handleResumeTask}
-                                                disabled={isResuming}
-                                                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-full shadow-sm transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed w-full justify-center"
-                                            >
-                                                {isResuming ? (
-                                                    <div className="w-3 h-3 border-2 border-white/50 border-t-white rounded-full animate-spin" />
-                                                ) : (
-                                                    <Search className="w-3 h-3" />
-                                                )}
-                                                <span>Search Web with Gemini</span>
-                                            </button>
-                                            <p className="text-[10px] text-zinc-500 mt-2 text-center">This action requires internet access.</p>
-                                        </div>
-                                    )}
+                                    {msg.role === Role.MODEL && index === messages.length - 1 && (
+                                        ['news', 'weather', 'stock', 'latest', 'schedule', 'price'].some(k => msg.content.toLowerCase().includes(k))
+                                    ) && (
+                                            <div className="mt-4 pt-3 border-t border-zinc-200 dark:border-zinc-800">
+                                                <button
+                                                    onClick={handleResumeTask}
+                                                    disabled={isResuming}
+                                                    className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-full shadow-sm transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed w-full justify-center"
+                                                >
+                                                    {isResuming ? (
+                                                        <div className="w-3 h-3 border-2 border-white/50 border-t-white rounded-full animate-spin" />
+                                                    ) : (
+                                                        <Search className="w-3 h-3" />
+                                                    )}
+                                                    <span>Search Web with Gemini</span>
+                                                </button>
+                                                <p className="text-[10px] text-zinc-500 mt-2 text-center">This action requires internet access.</p>
+                                            </div>
+                                        )}
 
                                     {/* Display Sources */}
                                     {msg.sources && msg.sources.length > 0 && (

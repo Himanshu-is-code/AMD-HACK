@@ -65,36 +65,67 @@ class Task(BaseModel):
 class ResumeRequest(BaseModel):
     api_key: str
 
+# File Lock
+file_lock = threading.Lock()
+
 def load_tasks() -> List[dict]:
-    if not os.path.exists(TASKS_FILE):
-        return []
-    try:
-        with open(TASKS_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return []
+    with file_lock:
+        if not os.path.exists(TASKS_FILE):
+            return []
+        try:
+            with open(TASKS_FILE, "r") as f:
+                return json.load(f)
+        except:
+            return []
 
 def save_task(task: dict):
-    tasks = load_tasks()
-    # Check if task already exists and update it
-    existing_index = next((index for (index, d) in enumerate(tasks) if d["id"] == task["id"]), None)
-    if existing_index is not None:
-        tasks[existing_index] = task
-    else:
-        tasks.append(task)
-        
-    with open(TASKS_FILE, "w") as f:
-        json.dump(tasks, f, indent=2)
+    with file_lock:
+        # We need to re-read inside the lock to ensure we have latest state
+        if not os.path.exists(TASKS_FILE):
+             tasks = []
+        else:
+             try:
+                with open(TASKS_FILE, "r") as f:
+                    tasks = json.load(f)
+             except:
+                tasks = []
+
+        # Check if task already exists and update it
+        existing_index = next((index for (index, d) in enumerate(tasks) if d["id"] == task["id"]), None)
+        if existing_index is not None:
+            tasks[existing_index] = task
+        else:
+            tasks.append(task)
+            
+        with open(TASKS_FILE, "w") as f:
+            json.dump(tasks, f, indent=2)
 
 def update_task_status(task_id: str, status: str, plan_update: str = None):
-    tasks = load_tasks()
-    for task in tasks:
-        if task["id"] == task_id:
-            task["status"] = status
-            if plan_update:
-                task["plan"] = plan_update
-            save_task(task)
-            break
+    # This function combines load/save, so we need the lock to generate the full sequence
+    # However, save_task already takes lock. To avoid deadlock (if we used recursive lock) or complexity,
+    # let's just implement the logic here directly or ensure save_task logic is safe.
+    # Actually, best to just use the lock here and call a helper that doesn't lock? 
+    # Or simply:
+    with file_lock:
+        if not os.path.exists(TASKS_FILE):
+            return
+        
+        try:
+             with open(TASKS_FILE, "r") as f:
+                tasks = json.load(f)
+        except:
+             return
+
+        for task in tasks:
+            if task["id"] == task_id:
+                task["status"] = status
+                if plan_update:
+                    task["plan"] = plan_update
+                
+                # Save immediately
+                with open(TASKS_FILE, "w") as f:
+                    json.dump(tasks, f, indent=2)
+                break
 
 def call_ollama(prompt: str, model: str = FAST_MODEL):
     try:
@@ -159,18 +190,24 @@ def extract_event_details(text: str, client_time_str: str = None):
     Rules:
     - "summary": Short title of the event.
     - "start_time": Calculate exact ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SS+HH:MM). Convert 12h to 24h (e.g. 2pm -> 14:00).
-    - If "tomorrow" is mentioned, add 1 day to Current Date.
+    - **CRITICAL**: If the user does not specify a date (e.g. "at 5pm", "dinner", "meeting"), assume TODAY ({current_time_context.split(',')[1].strip().split(' ')[0] if ',' in current_time_context else 'TODAY'}).
+    - Only use "Tomorrow" if explicitly stated or if the time has clearly passed for today.
     - "duration_minutes": Default 30.
     
     Example 1:
-    Current Date: Tuesday, 2024-01-02
+    Current Date: Tuesday, 2024-01-02 10:00
     User: "Meeting tomorrow at 2pm"
     Output: {{ "summary": "Meeting", "start_time": "2024-01-03T14:00:00+05:30", "duration_minutes": 30 }}
 
     Example 2:
-    Current Date: Friday, 2024-01-05
+    Current Date: Friday, 2024-01-05 09:00
     User: "Lunch at 12:30"
     Output: {{ "summary": "Lunch", "start_time": "2024-01-05T12:30:00+05:30", "duration_minutes": 30 }}
+    
+    Example 3:
+    Current Date: Friday, 2024-01-05 09:00
+    User: "Dinner"
+    Output: {{ "summary": "Dinner", "start_time": "2024-01-05T20:00:00+05:30", "duration_minutes": 30 }}
     
     User Request: "{text}"
     
@@ -203,57 +240,148 @@ def extract_event_details(text: str, client_time_str: str = None):
         print(f"Extraction Error: {e}")
         return None
 
+def check_internet():
+    """Checks for internet connectivity by attempting to connect to 8.8.8.8."""
+    try:
+        import socket
+        # Connect to Google DNS
+        socket.create_connection(("8.8.8.8", 53), timeout=3)
+        return True
+    except OSError:
+        return False
+
+def execute_task_logic(task_id: str, task_text: str, client_time: str = None, requires_internet: bool = True):
+    """
+    Executes the actual task logic (Calendar API, etc.).
+    Returns True if completed, False if paused due to network/error.
+    """
+    try:
+        # Double check internet before starting heavy lifting
+        if requires_internet and not check_internet():
+             logging.warning(f"Task {task_id}: Internet lost before execution. Re-queueing.")
+             update_task_status(task_id, "waiting_for_internet")
+             return False
+
+        update_task_status(task_id, "executing")
+        
+        # --- REAL ACTION EXECUTION ---
+        result_update = ""
+        triggers = ["calendar", "calender", "schedule", "meeting", "appointment", "event", "remind", "mark"]
+        if any(valid_trigger in task_text.lower() for valid_trigger in triggers):
+            logging.info(f"Executing Calendar Action for task {task_id}")
+            
+            # 1. Extract Details
+            # Optimization: If extraction is local/hybrid, maybe we don't need internet yet? 
+            # But extraction uses Ollama which is local.
+            details = extract_event_details(task_text, client_time_str=client_time)
+            logging.info(f"Extracted details: {details}")
+            
+            if details:
+                # 2. Create Event
+                # Calendar creation definitely needs internet
+                # We do a Just-In-Time check here even if requires_internet was False (though logically it should be True for calendar)
+                
+                # If the task originally claimed it didn't need internet but now we know it does (calendar), we check again.
+                if not check_internet(): 
+                     logging.warning(f"Task {task_id}: Needs internet for Calendar API. Re-queueing.")
+                     # Make sure to update the task to require internet for next time
+                     tasks = load_tasks()
+                     idx = next((i for i, t in enumerate(tasks) if t["id"] == task_id), None)
+                     if idx is not None:
+                         tasks[idx]["requires_internet"] = True
+                         tasks[idx]["status"] = "waiting_for_internet"
+                         save_task(tasks[idx])
+                     else:
+                        update_task_status(task_id, "waiting_for_internet")
+                     return False
+
+                cal_result = calendar_service.create_event(
+                    summary=details.get("summary", "New Event"),
+                    start_time_iso=details.get("start_time"),
+                    duration_minutes=details.get("duration_minutes", 30)
+                )
+                
+                # Check for network-related errors in the result
+                error_msg = str(cal_result.get("error", "")).lower()
+                network_keywords = [
+                    "network", "socket", "connection", "timeout", 
+                    "unable to find the server", "getaddrinfo", "client_connector_error", 
+                    "server disconnected"
+                ]
+                
+                if "error" in cal_result and any(k in error_msg for k in network_keywords):
+                        logging.warning(f"Task {task_id}: Network error ({cal_result['error']}). Re-queueing.")
+                        update_task_status(task_id, "waiting_for_internet")
+                        return False # Exit, do not complete
+                
+                # Success or non-retriable error
+                logging.info(f"Calendar Result: {cal_result}")
+                
+                if "link" in cal_result:
+                        result_update = f"\n\n✅ Event Created: **{details.get('summary')}**\n[View on Google Calendar]({cal_result['link']})"
+                else:
+                        result_update = f"\n\n❌ Event Creation Failed: {cal_result.get('error')}"
+            else:
+                result_update = "\n\n❌ Could not understand event details."
+                
+        # -----------------------------
+
+        # Update the task with the result
+        tasks = load_tasks()
+        existing_index = next((index for (index, d) in enumerate(tasks) if d["id"] == task_id), None)
+        if existing_index is not None:
+            tasks[existing_index]["plan"] += result_update
+            save_task(tasks[existing_index])
+
+        update_task_status(task_id, "completed")
+        return True
+
+    except Exception as e:
+        logging.error(f"Critical error executing task {task_id}: {e}")
+        # Optionally set to 'error' state, but for now just leave it or set complete with error
+        return False
+
 def background_task_simulation(task_id: str, requires_internet: bool, task_text: str, client_time: str = None):
-    """Simulates a task progressing through states, executing actions if needed."""
+    """Initial entry point for new tasks."""
     # Simulate thinking/planning time
     time.sleep(2)
     
-    update_task_status(task_id, "waiting_for_internet")
-    
-    if requires_internet:
-        print(f"Task {task_id} paused for internet")
-        return # PAUSE EXECUTION HERE
+    if requires_internet and not check_internet():
+        logging.info(f"Task {task_id}: Offline. Queueing.")
+        update_task_status(task_id, "waiting_for_internet")
+        return # EXIT. Monitor will pick it up later.
         
-    time.sleep(2)
-    update_task_status(task_id, "executing")
-    
-    # --- REAL ACTION EXECUTION ---
-    result_update = ""
-    triggers = ["calendar", "calender", "schedule", "meeting", "appointment", "event", "remind", "mark"]
-    if any(valid_trigger in task_text.lower() for valid_trigger in triggers):
-        logging.info(f"Executing Calendar Action for task {task_id}")
-        
-        # 1. Extract Details
-        details = extract_event_details(task_text, client_time_str=client_time)
-        logging.info(f"Extracted details: {details}")
-        
-        if details:
-            # 2. Create Event
-            cal_result = calendar_service.create_event(
-                summary=details.get("summary", "New Event"),
-                start_time_iso=details.get("start_time"),
-                duration_minutes=details.get("duration_minutes", 30)
-            )
-            logging.info(f"Calendar Result: {cal_result}")
+    # If we have internet (or don't need it), run immediately
+    execute_task_logic(task_id, task_text, client_time, requires_internet)
+
+def monitor_internet_queue():
+    """Global thread that checks for internet and resumes queued tasks."""
+    logging.info("Starting Internet Monitor Thread")
+    while True:
+        try:
+            time.sleep(10) # Check every 10 seconds
             
-            if "link" in cal_result:
-                 result_update = f"\n\n✅ Event Created: **{details.get('summary')}**\n[View on Google Calendar]({cal_result['link']})"
-            else:
-                 result_update = f"\n\n❌ Event Creation Failed: {cal_result.get('error')}"
-        else:
-             result_update = "\n\n❌ Could not understand event details."
-             
-    # -----------------------------
+            if check_internet():
+                tasks = load_tasks()
+                queued_tasks = [t for t in tasks if t.get("status") == "waiting_for_internet"]
+                
+                if queued_tasks:
+                    logging.info(f"Monitor: Found {len(queued_tasks)} queued tasks. Resuming...")
+                    for task in queued_tasks:
+                        # Spawn a thread so we don't block the monitor
+                        # Pass requires_internet=True (or read from task) because if it was queued, it likely needs internet
+                        # But safer to read from task if property exists
+                        req_net = task.get("requires_internet", True)
+                        
+                        threading.Thread(
+                            target=execute_task_logic, 
+                            args=(task["id"], task["original_request"], None, req_net) 
+                        ).start()
+        except Exception as e:
+            logging.error(f"Monitor Thread Error: {e}")
 
-    time.sleep(3)
-    
-    # Update the task with the result
-    tasks = load_tasks()
-    if task_id in tasks:
-        tasks[task_id]["plan"] += result_update
-        save_tasks(tasks)
-
-    update_task_status(task_id, "completed")
+# Start the monitor thread
+threading.Thread(target=monitor_internet_queue, daemon=True).start()
 
 def choose_model(text: str) -> str:
     # Rule-based routing
@@ -304,6 +432,50 @@ def update_settings(update: SettingUpdate):
 def test_calendar():
     return calendar_service.create_test_event()
 
+def analyze_internet_requirement(text: str) -> bool:
+    """Uses LLM to decide if a request requires internet."""
+    lowered = text.lower()
+    
+    # 1. STRICT OVERRIDE: Certain keywords ALWAYS mean internet.
+    # Don't trust the AI to not overthink it.
+    strict_keywords = ["news", "weather", "stock", "price of", "current event", "latest", "bse", "nse", "crypto", "bitcoin"]
+    if any(k in lowered for k in strict_keywords):
+        logging.info(f"Internet Check: Keyword '{next(k for k in strict_keywords if k in lowered)}' found. strict=True")
+        return True
+
+    try:
+        # Improved prompt to be more aggressive about needing internet for info retrieval
+        prompt = f"""
+        [INST]
+        You are a classifier that determines if a user request requires external tools/internet to be answered *accurately* and *fully*.
+        
+        Rules:
+        1. If the user asks for "news", "weather", "stocks", "sports scores", or "current events", answer YES.
+        2. If the user asks for specific facts that might be outdated in your training data, answer YES.
+        3. If the user asks for a creative task (poem, email, code) that relies on internal knowledge, answer NO.
+        4. If the user asks "how to" do something general (e.g. "how to tie a tie"), answer NO.
+        5. If the user asks "what is the latest...", answer YES.
+
+        Request: "{text}"
+        
+        Does this request require real-time internet access? Answer ONLY "YES" or "NO".
+        [/INST]
+        """
+        # Use FAST_MODEL for speed
+        response = call_ollama(prompt, model=FAST_MODEL)
+        
+        logging.info(f"Internet Check AI Response: {response}")
+        
+        # Check for YES
+        if "YES" in response.upper():
+            return True
+        return False
+    except Exception as e:
+        logging.error(f"AI Internet Check failed: {e}")
+        # Fallback to general keywords
+        keywords = ["research", "search", "find", "who", "what", "where"]
+        return any(k in lowered for k in keywords)
+
 @app.post("/agent")
 def agent(input: UserInput, background_tasks: BackgroundTasks):
     # 0. Choose Model
@@ -317,11 +489,11 @@ def agent(input: UserInput, background_tasks: BackgroundTasks):
     if "Error connecting" in plan_text:
          return {"plan": plan_text, "status": "error"}
     
-    # Check if internet is required (simple keyword heuristic)
-    keywords = ["research", "search", "find", "who", "what", "where", "weather", "stock", "price", "news"]
-    requires_internet = any(k in input.text.lower() for k in keywords)
+    # 3. Check if internet is required (AI Classification)
+    requires_internet = analyze_internet_requirement(input.text)
+    logging.info(f"Task '{input.text}' requires internet: {requires_internet}")
 
-    # 3. Create Task object
+    # 4. Create Task object
     new_task = {
         "id": str(uuid.uuid4()),
         "original_request": input.text,

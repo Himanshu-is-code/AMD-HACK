@@ -244,7 +244,7 @@ const App: React.FC = () => {
   const currentChat = chats.find(c => c.id === currentChatId);
 
   const handleResumeWithGemini = async () => {
-    if (!currentChatId || !activeTaskId) return;
+    if (!currentChatId) return;
 
     // Get query from chat history (last user message)
     const chat = chats.find(c => c.id === currentChatId);
@@ -264,32 +264,26 @@ const App: React.FC = () => {
       const apiKey = process.env.API_KEY || import.meta.env.VITE_GEMINI_API_KEY;
       const ai = new GoogleGenAI({ apiKey });
 
+      // Inject Date Context
+      const today = new Date();
+      const dateString = today.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      let queryWithContext = `Current Date: ${dateString}. ${query}`;
+
+      // User requested "just the date and time" for confirmation on calendar tasks
+      const lowerQuery = query.toLowerCase();
+      if (lowerQuery.includes('schedule') || lowerQuery.includes('calendar') || lowerQuery.includes('remind') || lowerQuery.includes('event')) {
+        queryWithContext += "\n\nIMPORTANT: Use Google Search to verify the exact date and time if needed. Return ONLY the confirmed Date and Time (and timezone). Do not provide a long explanation.";
+      }
+
       const result = await ai.models.generateContent({
         model: "gemini-2.5-flash",
-        contents: query,
+        contents: queryWithContext,
         config: {
           tools: [{ googleSearch: {} }]
         }
       });
       const response = result;
-      const text = response.text || ""; // SDK might return text directly strictly or via method?
-      // In snippet: const response = await ai.models.generateContent(...) -> response.text gives text?
-      // Snippet says: const analysisResult = JSON.parse(response.text)
-      // So response.text is a STRING property? Or a method?
-      // Inspecting snippet: `const aiResponse = response.text;`
-      // So it is a property.
-
-      // Extract sources
-      // Snippet: const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
-      // Wait, is 'candidates' on response? The snippet uses:
-      // `const response = await chat.sendMessage(...)`
-      // `const groundingMetadata = response.candidates?.[0]?.groundingMetadata;`
-      // But for `ai.models.generateContent`, the snippet shows:
-      // `const response = await ai.models.generateContent(...)`
-      // `JSON.parse(response.text)`
-      // It doesn't show source extraction for generateContent, only for chat.sendMessage.
-      // But typically the response object structure is similar.
-      // I'll assume response.candidates exists.
+      const text = response.text || "";
 
       const groundingMetadata = response.candidates?.[0]?.groundingMetadata;
       const sources: { title: string, url: string }[] = [];
@@ -313,9 +307,9 @@ const App: React.FC = () => {
             // Update the existing "waiting" or "plan" message
             updatedMsgs[updatedMsgs.length - 1] = {
               ...lastMsg,
-              content: text || (response.text as string), // handle if text is property
+              content: text || (response.text as string),
               sources: sources,
-              latency: Date.now() - lastMsg.timestamp // simple delta
+              latency: Date.now() - lastMsg.timestamp
             };
           }
           return { ...c, messages: updatedMsgs };
@@ -323,7 +317,7 @@ const App: React.FC = () => {
         return c;
       }));
 
-      // Notify backend that task is complete
+      // Notify backend that task is complete (ONLY if we have a task ID)
       if (activeTaskId) {
         try {
           const service = await import('./services/agentService');
@@ -331,10 +325,9 @@ const App: React.FC = () => {
         } catch (e) {
           console.error("Failed to update backend task status", e);
         }
+        setActiveTaskId(null); // Stop polling backend
+        setActiveTaskStatus('completed');
       }
-
-      setActiveTaskId(null); // Stop polling backend
-      setActiveTaskStatus('completed');
 
     } catch (err: any) {
       console.error("Gemini Search Error:", err);
@@ -353,7 +346,9 @@ const App: React.FC = () => {
         }
         return c;
       }));
-      setActiveTaskId(null);
+      if (activeTaskId) {
+        setActiveTaskId(null);
+      }
     } finally {
       setIsLoading(false);
     }
