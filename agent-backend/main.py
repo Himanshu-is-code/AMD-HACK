@@ -44,6 +44,7 @@ app.add_middleware(
 class UserInput(BaseModel):
     text: str
     client_time: Optional[str] = None # Capture client-side time string
+    extracted_time: Optional[str] = None # Captured by frontend (chrono-node)
 
 import google.generativeai as genai
 from fastapi.encoders import jsonable_encoder
@@ -61,6 +62,7 @@ class Task(BaseModel):
     requires_internet: bool = False
     model_used: str = FAST_MODEL
     sources: Optional[List[dict]] = []
+    extracted_time: Optional[str] = None # Store for execution
 
 class ResumeRequest(BaseModel):
     api_key: str
@@ -165,58 +167,74 @@ def call_ollama(prompt: str, model: str = FAST_MODEL):
 
 
 
-def extract_event_details(text: str, client_time_str: str = None):
+def extract_event_details(text: str, client_time_str: str = None, extracted_time_override: str = None):
     """Uses Ollama to extract structured event data from text."""
     
-    if client_time_str:
-        # Use provided client time directly (rich format expected from JS: "Wed Feb 04 2026 ...")
-        current_time_context = client_time_str
-        logging.info(f"Using Client Time: {current_time_context}")
-    else:
-        # Fallback to Server Time
-        now = datetime.now().astimezone()
-        current_time_str = now.strftime("%Y-%m-%d %H:%M:%S %Z%z")
-        current_day = now.strftime("%A")
-        current_time_context = f"{current_day}, {current_time_str}"
-        logging.info(f"Using Server Time: {current_time_context}")
-    
-    prompt = f"""
-    [INST] 
-    You are a precise JSON extractor. You do NOT write code. You do NOT explain.
-    
-    Task: Extract event details from the user text.
-    User's Current Time: {current_time_context}
-    
-    Rules:
-    - "summary": Short title of the event.
-    - "start_time": Calculate exact ISO 8601 timestamp (YYYY-MM-DDTHH:MM:SS+HH:MM). Convert 12h to 24h (e.g. 2pm -> 14:00).
-    - **CRITICAL**: If the user does not specify a date (e.g. "at 5pm", "dinner", "meeting"), assume TODAY ({current_time_context.split(',')[1].strip().split(' ')[0] if ',' in current_time_context else 'TODAY'}).
-    - Only use "Tomorrow" if explicitly stated or if the time has clearly passed for today.
-    - "duration_minutes": Default 30.
-    
-    Example 1:
-    Current Date: Tuesday, 2024-01-02 10:00
-    User: "Meeting tomorrow at 2pm"
-    Output: {{ "summary": "Meeting", "start_time": "2024-01-03T14:00:00+05:30", "duration_minutes": 30 }}
+    # 1. Frontend Override (Highest Priority)
+    # If the frontend deterministic parser found a date, we TRUST it.
+    # We only ask the LLM to extract the Summary (Title).
+    if extracted_time_override:
+        logging.info(f"Using Frontend Extracted Time: {extracted_time_override}")
+        prompt = f"""
+        [INST]
+        You are a JSON extractor.
+        
+        Task: Extract the "summary" (Event Title) from the text.
+        
+        Input: "{text}"
+        Locked Start Time: "{extracted_time_override}"
+        
+        Output JSON:
+        {{
+            "summary": "Short event title",
+            "start_time": "{extracted_time_override}",
+            "duration_minutes": 30
+        }}
+        
+        Response (JSON ONLY):
+        [/INST]
+        """
+        model_to_use = FAST_MODEL # Use fast model since logic is simple now
+    else: 
+        # ... Fallback to full LLM extraction (Old Logic) ...
+        if client_time_str:
+            current_time_context = client_time_str
+            logging.info(f"Using Client Time: {current_time_context}")
+        else:
+            now = datetime.now().astimezone()
+            current_time_str = now.strftime("%Y-%m-%d %H:%M:%S %Z%z")
+            current_day = now.strftime("%A")
+            current_time_context = f"{current_day}, {current_time_str}"
+            logging.info(f"Using Server Time: {current_time_context}")
+        
+        prompt = f"""
+        [INST] 
+        You are a precise JSON extractor. You do NOT write code. Do not explain.
+        
+        Task: Extract event details from the user text.
+        User's Current Time: {current_time_context}
+        
+        Rules for Date Selection (Follow Hierarchy):
+        1. **Explicit Keyword "Today"**: You MUST use the "Current Date" ({current_time_context.split(',')[1].strip().split(' ')[0] if ',' in current_time_context else 'TODAY'}). DO NOT shift to tomorrow, even if the time is in the past.
+        2. **Explicit Keyword "Tomorrow"**: Add 1 day to "Current Date".
+        3. **No Date Specified**: Assume "Today".
+        4. **Time Logic**: Only shift to tomorrow if the user literally says "tomorrow" or a specific future date.
+        
+        Task Rules:
+        - "summary": Short title.
+        - "start_time": Exact ISO 8601 (YYYY-MM-DDTHH:MM:SS+HH:MM). Use User's Year/Month/Day.
+        - "duration_minutes": Default 30.
+        
+        User Request: "{text}"
+        
+        Response (JSON ONLY):
+        [/INST]
+        """
+        model_to_use = SMART_MODEL
 
-    Example 2:
-    Current Date: Friday, 2024-01-05 09:00
-    User: "Lunch at 12:30"
-    Output: {{ "summary": "Lunch", "start_time": "2024-01-05T12:30:00+05:30", "duration_minutes": 30 }}
-    
-    Example 3:
-    Current Date: Friday, 2024-01-05 09:00
-    User: "Dinner"
-    Output: {{ "summary": "Dinner", "start_time": "2024-01-05T20:00:00+05:30", "duration_minutes": 30 }}
-    
-    User Request: "{text}"
-    
-    Response (JSON ONLY):
-    [/INST]
-    """
     try:
         logging.info("--- Starting Extraction ---")
-        response = call_ollama(prompt, model=SMART_MODEL) 
+        response = call_ollama(prompt, model=model_to_use) 
         logging.info(f"Ollama Raw Response: {response}")
         
         # Clean response (remove markdown code blocks)
@@ -250,7 +268,7 @@ def check_internet():
     except OSError:
         return False
 
-def execute_task_logic(task_id: str, task_text: str, client_time: str = None, requires_internet: bool = True):
+def execute_task_logic(task_id: str, task_text: str, client_time: str = None, requires_internet: bool = True, extracted_time: str = None):
     """
     Executes the actual task logic (Calendar API, etc.).
     Returns True if completed, False if paused due to network/error.
@@ -271,9 +289,8 @@ def execute_task_logic(task_id: str, task_text: str, client_time: str = None, re
             logging.info(f"Executing Calendar Action for task {task_id}")
             
             # 1. Extract Details
-            # Optimization: If extraction is local/hybrid, maybe we don't need internet yet? 
-            # But extraction uses Ollama which is local.
-            details = extract_event_details(task_text, client_time_str=client_time)
+            # Pass extracted_time to override LLM date logic
+            details = extract_event_details(task_text, client_time_str=client_time, extracted_time_override=extracted_time)
             logging.info(f"Extracted details: {details}")
             
             if details:
@@ -341,7 +358,7 @@ def execute_task_logic(task_id: str, task_text: str, client_time: str = None, re
         # Optionally set to 'error' state, but for now just leave it or set complete with error
         return False
 
-def background_task_simulation(task_id: str, requires_internet: bool, task_text: str, client_time: str = None):
+def background_task_simulation(task_id: str, requires_internet: bool, task_text: str, client_time: str = None, extracted_time: str = None):
     """Initial entry point for new tasks."""
     # Simulate thinking/planning time
     time.sleep(2)
@@ -352,7 +369,7 @@ def background_task_simulation(task_id: str, requires_internet: bool, task_text:
         return # EXIT. Monitor will pick it up later.
         
     # If we have internet (or don't need it), run immediately
-    execute_task_logic(task_id, task_text, client_time, requires_internet)
+    execute_task_logic(task_id, task_text, client_time, requires_internet, extracted_time)
 
 def monitor_internet_queue():
     """Global thread that checks for internet and resumes queued tasks."""
@@ -478,6 +495,8 @@ def analyze_internet_requirement(text: str) -> bool:
 
 @app.post("/agent")
 def agent(input: UserInput, background_tasks: BackgroundTasks):
+    logging.info(f"Received Agent Request: {input.text} | Client Time: {input.client_time} | Extracted Time: {input.extracted_time}")
+    
     # 0. Choose Model
     selected_model = choose_model(input.text)
     
@@ -500,7 +519,8 @@ def agent(input: UserInput, background_tasks: BackgroundTasks):
         "plan": plan_text,
         "status": "planned",
         "requires_internet": requires_internet,
-        "model_used": selected_model
+        "model_used": selected_model,
+        "extracted_time": input.extracted_time
     }
 
     # 4. Save to disk
@@ -512,7 +532,8 @@ def agent(input: UserInput, background_tasks: BackgroundTasks):
         new_task["id"], 
         requires_internet, 
         input.text,
-        input.client_time # Pass the client time
+        input.client_time,
+        input.extracted_time # Pass the extracted time
     )
 
     return new_task
