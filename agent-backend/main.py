@@ -11,6 +11,7 @@ from typing import List, Optional
 import uuid
 import settings_service
 import calendar_service
+import gmail_service
 from datetime import datetime  # Added missing import
 import logging
 
@@ -129,17 +130,22 @@ def update_task_status(task_id: str, status: str, plan_update: str = None):
                     json.dump(tasks, f, indent=2)
                 break
 
-def call_ollama(prompt: str, model: str = FAST_MODEL):
+def call_ollama(prompt: str, model: str = FAST_MODEL, json_mode: bool = False):
     try:
         logging.info(f"Calling Ollama with model: {model}")
-        print(f"Calling Ollama with model: {model}")
+        print(f"Calling Ollama with model: {model}, json_mode: {json_mode}")
+        
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+        }
+        if json_mode:
+            payload["format"] = "json"
+        
         res = requests.post(
             "http://localhost:11434/api/generate",
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": False,
-            },
+            json=payload,
             timeout=300  
         )
         logging.info(f"Ollama Status: {res.status_code}")
@@ -166,6 +172,48 @@ def call_ollama(prompt: str, model: str = FAST_MODEL):
 
 
 
+
+def clean_email_body(body: str) -> str:
+    """
+    Removes quoted replies and forwarded message headers to extract the latest message.
+    """
+    lines = body.split('\n')
+    cleaned_lines = []
+    
+    # Common separators for replies/forwards where we should STOP reading
+    # 1. "On [Date], [Name] wrote:"
+    # 2. "From: [Name] [Email] Sent: [Date]"
+    # 3. "-----Original Message-----"
+    # 4. "---------- Forwarded message ---------"
+    # 5. Lines starting with > (quoted text)
+    
+    import re
+    reply_indicators = [
+        r'On\s+.*wrote:',
+        r'From:\s+.*Sent:',
+        r'-+\s*Original Message\s*-+',
+        r'-+\s*Forwarded message\s*-+',
+        r'________________________________'
+    ]
+    
+    for line in lines:
+        # Check if line indicates start of quoted history
+        is_quote_start = False
+        for indicator in reply_indicators:
+            if re.search(indicator, line, re.IGNORECASE):
+                is_quote_start = True
+                break
+        
+        if is_quote_start:
+            break # Stop processing at the first sign of history
+            
+        # Skip lines that are purely quoted (START with >)
+        if line.strip().startswith('>'):
+            continue
+            
+        cleaned_lines.append(line)
+        
+    return "\n".join(cleaned_lines).strip()
 
 def extract_event_details(text: str, client_time_str: str = None, extracted_time_override: str = None):
     """Uses Ollama to extract structured event data from text."""
@@ -196,45 +244,48 @@ def extract_event_details(text: str, client_time_str: str = None, extracted_time
         """
         model_to_use = FAST_MODEL # Use fast model since logic is simple now
     else: 
-        # ... Fallback to full LLM extraction (Old Logic) ...
         if client_time_str:
             current_time_context = client_time_str
             logging.info(f"Using Client Time: {current_time_context}")
         else:
             now = datetime.now().astimezone()
-            current_time_str = now.strftime("%Y-%m-%d %H:%M:%S %Z%z")
-            current_day = now.strftime("%A")
-            current_time_context = f"{current_day}, {current_time_str}"
+            current_time_context = now.strftime("%A, %Y-%m-%d %H:%M:%S %Z%z")
             logging.info(f"Using Server Time: {current_time_context}")
         
         prompt = f"""
         [INST] 
-        You are a precise JSON extractor. You do NOT write code. Do not explain.
+        You are a smart JSON extractor.
         
-        Task: Extract event details from the user text.
-        User's Current Time: {current_time_context}
+        Task: Extract event details from the user text into JSON format.
+        Current Time: {current_time_context}
         
-        Rules for Date Selection (Follow Hierarchy):
-        1. **Explicit Keyword "Today"**: You MUST use the "Current Date" ({current_time_context.split(',')[1].strip().split(' ')[0] if ',' in current_time_context else 'TODAY'}). DO NOT shift to tomorrow, even if the time is in the past.
-        2. **Explicit Keyword "Tomorrow"**: Add 1 day to "Current Date".
-        3. **No Date Specified**: Assume "Today".
-        4. **Time Logic**: Only shift to tomorrow if the user literally says "tomorrow" or a specific future date.
+        Rules:
+        1. "start_time": Must be ISO 8601 (YYYY-MM-DDTHH:MM:SS format).
+        - If user says "tomorrow at 2pm", calculate the date based on Current Time.
+        - If user says "today", use Current Date.
+        2. "summary": Short event title.
+        3. "duration_minutes": Default 30.
+        4. OUPUT JSON ONLY. NO MARKDOWN. NO EXPLANATION.
         
-        Task Rules:
-        - "summary": Short title.
-        - "start_time": Exact ISO 8601 (YYYY-MM-DDTHH:MM:SS+HH:MM). Use User's Year/Month/Day.
-        - "duration_minutes": Default 30.
+        Example:
+        User: "Lunch with Bob tomorrow at 1pm"
+        (Assuming today is Monday 2023-10-09)
+        {{
+            "summary": "Lunch with Bob",
+            "start_time": "2023-10-10T13:00:00",
+            "duration_minutes": 60
+        }}
         
         User Request: "{text}"
         
-        Response (JSON ONLY):
+        Response:
         [/INST]
         """
-        model_to_use = SMART_MODEL
+        model_to_use = FAST_MODEL # Use fast model for better instruction following on simple tasks
 
     try:
         logging.info("--- Starting Extraction ---")
-        response = call_ollama(prompt, model=model_to_use) 
+        response = call_ollama(prompt, model=model_to_use, json_mode=True)
         logging.info(f"Ollama Raw Response: {response}")
         
         # Clean response (remove markdown code blocks)
@@ -249,7 +300,17 @@ def extract_event_details(text: str, client_time_str: str = None, extracted_time
                 logging.info(f"Successfully parsed JSON: {data}")
                 return data
             except json.JSONDecodeError as e:
-                logging.error(f"JSON Parse Error: {e}")
+                logging.warning(f"JSON Parse Error: {e}. Trying ast.literal_eval fallback.")
+                try:
+                    import ast
+                    # Fallback for single quotes or loose JSON
+                    data = ast.literal_eval(json_match.group(0))
+                    if isinstance(data, dict):
+                        logging.info(f"Successfully parsed via ast.literal_eval: {data}")
+                        return data
+                except Exception as ast_e:
+                    logging.error(f"AST Parse failed: {ast_e}")
+                
                 return None
         
         logging.warning("No JSON found in response")
@@ -341,6 +402,155 @@ def execute_task_logic(task_id: str, task_text: str, client_time: str = None, re
             else:
                 result_update = "\n\n❌ Could not understand event details."
                 
+        # -----------------------------
+        
+        # --- GMAIL ACTION LOGIC ---
+        t = task_text.lower()
+        logging.info(f"Evaluating Gmail Triggers for: '{t}'")
+        
+        # Flags for trigger evaluation
+        is_summary_req = any(kw in t for kw in ["unread", "inbox", "summary", "summarize"])
+        is_search_req = any(kw in t for kw in ["from", "about", "for", "regarding", "subject", "read", "latest", "find", "check", "tell me more", "timing", "when"])
+        has_email_kw = "email" in t or "gmail" in t or "session" in t
+        
+        logging.info(f"Gmail Triggers: summary={is_summary_req}, search={is_search_req}, has_email={has_email_kw}")
+
+        if has_email_kw or is_search_req:
+            if not check_internet():
+                logging.warning(f"Task {task_id}: Needs internet for Gmail. Re-queueing.")
+                update_task_status(task_id, "waiting_for_internet")
+                return False
+
+            # Use LLM to decide if this is a SPECIFIC search or a GENERAL summary
+            decision_prompt = f"""
+            [INST]
+            Analyze this request: "{task_text}"
+            
+            Does the user want:
+            1. A general summary of their recent/unread emails? (GENERAL)
+            2. To find or read a specific email about a person, topic, or event? (SPECIFIC)
+            
+            Rules:
+            - "summarize my emails", "what is my email summary", "check inbox", "any new emails?" -> GENERAL
+            - "check email from Bob", "summary of the meeting email", "read the latest email" -> SPECIFIC
+            
+            Answer "SPECIFIC" or "GENERAL" only.
+            [/INST]
+            """
+            decision = call_ollama(decision_prompt, model=FAST_MODEL).strip().upper()
+            logging.info(f"Gmail Action Decision: {decision}")
+
+            # 1. SPECIFIC SEARCH
+            # We trigger specific search if decision is SPECIFIC OR if clear search keywords are present
+            # BUT we guard against generic "summary" requests slipping in here
+            should_run_specific = "SPECIFIC" in decision or (is_search_req and not is_summary_req)
+            
+            if should_run_specific:
+                logging.info(f"Executing Gmail Specific Check for task {task_id}")
+                
+                search_prompt = f"""
+                [INST]
+                You are a Gmail Search Query Generator.
+                User Request: "{task_text}"
+                
+                Task: Generate a simple Gmail search query string.
+                
+                Rules:
+                1. Return ONLY the search query. No preamble.
+                2. Focus on the core entity or event.
+                3. Use keywords that would appear in the Subject or Sender.
+                4. REMOVE commands like "tell me", "check", "email", "summary", "summarize".
+                
+                Response:
+                [/INST]
+                """
+                raw_query = call_ollama(search_prompt, model=FAST_MODEL).strip()
+                search_query = raw_query.split('\n')[-1].replace('"', '').replace("'", "").replace(",", " ")
+                if ":" in search_query and len(search_query.split(":")[0].split()) > 1:
+                    search_query = search_query.split(":")[-1].strip()
+                
+                if search_query.count("from:") > 1:
+                    search_query = search_query.replace("from:", "")
+                
+                # GUARD: If query is too generic, abort specific search
+                clean_q = search_query.lower().strip()
+                if clean_q in ["", "summary", "email", "gmail", "inbox", "emails", "my email", "my emails"]:
+                    logging.info(f"Generated query '{search_query}' is too generic. Switching to GENERAL.")
+                    should_run_specific = False # Fall through to general
+                    decision = "GENERAL"
+                else:
+                    logging.info(f"Primary search query: '{search_query}'")
+                    emails = gmail_service.search_emails(search_query, limit=5)
+                    
+                    if not emails:
+                        logging.info(f"No results for primary. Trying softer fallback...")
+                        # Try just the first 3 words of the query, but remove trailing operators
+                        params = search_query.split()
+                        fallback_words = params[:3]
+                        
+                        # Clean trailing operator keywords if present
+                        if fallback_words and fallback_words[-1].lower() in ["from", "about", "subject", "for"]:
+                            fallback_words.pop()
+                        
+                        softer_query = " ".join(fallback_words)
+                        logging.info(f"Fallback query: '{softer_query}'")
+                        emails = gmail_service.search_emails(softer_query, limit=5)
+
+                    if emails:
+                        read_intent = any(kw in t for kw in ["read", "latest", "content", "what is", "timing", "session", "when", "tell me", "summary", "summarize"])
+                        if len(emails) == 1 or read_intent:
+                            email_id = emails[0]['id']
+                            logging.info(f"Fetching content for email ID: {email_id}")
+                            content = gmail_service.get_email_content(email_id)
+                            
+                            if content:
+                                cleaned_body = clean_email_body(content['body'])
+                                read_prompt = f"""
+                                [INST]
+                                The user asked: "{task_text}"
+                                Email Content:
+                                From: {content['sender']}
+                                Subject: {content['subject']}
+                                Body: {cleaned_body[:3500]}
+                                
+                                Summarize the core details (especially timing/links) as requested.
+                                [/INST]
+                                """
+                                email_response = call_ollama(read_prompt, model=SMART_MODEL)
+                                email_link = f"https://mail.google.com/mail/u/0/#inbox/{email_id}"
+                                result_update += f"\n\n📧 **Email Found**\n**From:** {content['sender']}\n**Subject:** {content['subject']}\n\n{email_response}\n\n[Open in Gmail]({email_link})"
+                            else:
+                                result_update += "\n\n❌ Could not retrieve email content."
+                        else:
+                            email_list = "\n".join([f"- **{e['subject']}** from {e['sender']}" for e in emails])
+                            result_update += f"\n\n🔍 **Search Results for '{search_query}':**\n{email_list}\n\n*Tip: Ask me to 'read the one about...'*"
+                    elif "SPECIFIC" in decision:
+                        # Only show "No results" if we are committed to SPECIFIC
+                        # If we have a fallback to GENERAL available (e.g. user said "summary of X"), 
+                        # we might want to let it fall through? 
+                        # But for now, if they asked for X and we didn't find X, saying "No emails found for X" is correct.
+                        result_update += f"\n\n🔍 No emails found for: `{search_query}`"
+
+            # 2. GENERAL SUMMARY (Only if SPECIFIC didn't finish the job OR if explicitly GENERAL)
+            # We check if result_update is empty OR if decision is GENERAL
+            if "GENERAL" in decision or (is_summary_req and not result_update):
+                logging.info(f"Executing Gmail Summary Action for task {task_id}")
+                emails = gmail_service.fetch_recent_unread_emails(limit=10)
+                
+                if emails is None:
+                    result_update += "\n\n⚠️ **Gmail Access Required**"
+                elif not emails:
+                    result_update += "\n\n✅ You have no new unread emails."
+                else:
+                    logging.info(f"Fetched {len(emails)} emails for summary.")
+                    email_text = ""
+                    for i, email in enumerate(emails):
+                        email_text += f"Email {i+1}: From: {email['sender']} Subject: {email['subject']} Snippet: {email['snippet']}\n\n"
+                    
+                    summary_prompt = f"[INST] Summarize these unread emails briefly:\n{email_text}\n[/INST]"
+                    summary = call_ollama(summary_prompt, model=SMART_MODEL)
+                    result_update += f"\n\n📧 **Inbox Summary**\n{summary}"
+
         # -----------------------------
 
         # Update the task with the result
@@ -449,13 +659,20 @@ def update_settings(update: SettingUpdate):
 def test_calendar():
     return calendar_service.create_test_event()
 
+@app.get("/gmail/unread")
+def get_unread_emails(limit: int = 2):
+    emails = gmail_service.fetch_recent_unread_emails(limit=limit)
+    if emails is None:
+        raise HTTPException(status_code=401, detail="Gmail access required")
+    return emails
+
 def analyze_internet_requirement(text: str) -> bool:
     """Uses LLM to decide if a request requires internet."""
     lowered = text.lower()
     
     # 1. STRICT OVERRIDE: Certain keywords ALWAYS mean internet.
     # Don't trust the AI to not overthink it.
-    strict_keywords = ["news", "weather", "stock", "price of", "current event", "latest", "bse", "nse", "crypto", "bitcoin"]
+    strict_keywords = ["news", "weather", "stock", "price of", "current event", "latest", "bse", "nse", "crypto", "bitcoin", "email", "gmail", "inbox", "unread"]
     if any(k in lowered for k in strict_keywords):
         logging.info(f"Internet Check: Keyword '{next(k for k in strict_keywords if k in lowered)}' found. strict=True")
         return True

@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from googleapiclient.discovery import build
 import auth_service
+import logging
 
 def create_event(summary: str, start_time_iso: str, duration_minutes: int = 30):
     """Creates a calendar event with specific details."""
@@ -39,7 +40,7 @@ def create_event(summary: str, start_time_iso: str, duration_minutes: int = 30):
                 error_details = e.content.decode('utf-8')
             except:
                 pass
-        print(f"Calendar Error: {error_details}")
+        logging.error(f"Calendar Error: {error_details}")
         return {"error": error_details}
 
 def create_test_event():
