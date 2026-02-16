@@ -1,5 +1,11 @@
-import React, { useState } from 'react';
-import { Settings, X, RotateCcw, Pencil, Archive, Pin } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Settings, X, RotateCcw, Pencil, Archive, Pin, Loader2 } from 'lucide-react';
+
+interface Email {
+  subject: string;
+  sender: string;
+  snippet: string;
+}
 
 interface EmailWidgetProps {
   id?: string;
@@ -13,6 +19,9 @@ export const EmailWidget: React.FC<EmailWidgetProps> = ({
   isLocked
 }) => {
   const [showSettings, setShowSettings] = useState(false);
+  const [emails, setEmails] = useState<Email[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Customization State
   const [customStyles, setCustomStyles] = useState({
@@ -20,6 +29,31 @@ export const EmailWidget: React.FC<EmailWidgetProps> = ({
     textColor: '',
     fontFamily: 'font-sans',
   });
+
+  const fetchEmails = async () => {
+    setIsLoading(true);
+    setError(null);
+    try {
+      const response = await fetch('http://localhost:8000/gmail/unread?limit=2');
+      if (!response.ok) {
+        if (response.status === 401) {
+          throw new Error('Gmail access required. Please log in.');
+        }
+        throw new Error('Failed to fetch emails');
+      }
+      const data = await response.json();
+      setEmails(data);
+    } catch (err: any) {
+      setError(err.message);
+      console.error('EmailWidget Error:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchEmails();
+  }, []);
 
   return (
     <div className="w-full h-full relative group">
@@ -105,62 +139,63 @@ export const EmailWidget: React.FC<EmailWidgetProps> = ({
         >
           {/* Header */}
           <div className="flex justify-between items-center mb-4 px-1">
-            <span className="text-xl font-normal tracking-tight">Primary (99+)</span>
-            <button className="w-11 h-11 rounded-2xl bg-[#C2E7FF] hover:bg-[#b3dffc] text-[#001D35] flex items-center justify-center transition-colors shadow-sm pointer-events-auto">
-              <Pencil className="w-5 h-5 fill-current" />
+            <span className="text-xl font-normal tracking-tight">
+              {error ? 'Inbox Error' : emails.length > 0 ? 'Primary' : 'Inbox'}
+            </span>
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                fetchEmails();
+              }}
+              disabled={isLoading}
+              className="w-11 h-11 rounded-2xl bg-[#C2E7FF] hover:bg-[#b3dffc] disabled:opacity-50 text-[#001D35] flex items-center justify-center transition-colors shadow-sm pointer-events-auto"
+            >
+              {isLoading ? (
+                <Loader2 className="w-5 h-5 animate-spin" />
+              ) : (
+                <Pencil className="w-5 h-5 fill-current" />
+              )}
             </button>
           </div>
 
           {/* List */}
           <div className="flex-1 flex flex-col gap-2 overflow-hidden pointer-events-auto">
-            {/* Email 1 */}
-            <div className={`
+            {error ? (
+              <div className="flex-1 flex items-center justify-center text-center p-4">
+                <p className="text-sm text-red-500 opacity-80">{error}</p>
+              </div>
+            ) : emails.length === 0 && !isLoading ? (
+              <div className="flex-1 flex items-center justify-center text-center p-4">
+                <p className="text-sm opacity-50 italic">No unread emails</p>
+              </div>
+            ) : (
+              emails.map((email, idx) => (
+                <div
+                  key={idx}
+                  className={`
                     rounded-[18px] p-3.5 flex gap-3 transition-colors cursor-pointer group/item
                     ${customStyles.bgColor
-                ? 'bg-black/5 dark:bg-white/10'
-                : 'bg-zinc-100 dark:bg-[#334155]/40 hover:bg-zinc-200 dark:hover:bg-[#334155]/60'
-              }
-                 `}>
-              <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-                <span className="text-[15px] font-semibold leading-tight">LeetCode</span>
-                <span className="text-[14px] font-medium leading-tight truncate">LeetCode Weekly Digest</span>
-                <span className="text-[13px] opacity-70 truncate leading-tight">Hi LeetCoder! A LeetCode...</span>
-              </div>
-              <div className="flex flex-col items-end justify-center">
-                <div className={`w-8 h-8 rounded-lg border flex items-center justify-center transition-colors ${customStyles.textColor
-                  ? 'border-current/20'
-                  : 'border-zinc-300 dark:border-zinc-600 text-zinc-500 dark:text-zinc-400'
-                  }`}>
-                  <Archive className="w-4 h-4" />
+                      ? 'bg-black/5 dark:bg-white/10'
+                      : 'bg-zinc-100 dark:bg-[#334155]/40 hover:bg-zinc-200 dark:hover:bg-[#334155]/60'
+                    }
+                  `}
+                >
+                  <div className="flex-1 min-w-0 flex flex-col gap-0.5">
+                    <span className="text-[15px] font-semibold leading-tight truncate">{email.sender.split('<')[0].trim()}</span>
+                    <span className="text-[14px] font-medium leading-tight truncate">{email.subject}</span>
+                    <span className="text-[13px] opacity-70 truncate leading-tight">{email.snippet}</span>
+                  </div>
+                  <div className="flex flex-col items-end justify-center">
+                    <div className={`w-8 h-8 rounded-lg border flex items-center justify-center transition-colors ${customStyles.textColor
+                      ? 'border-current/20'
+                      : 'border-zinc-300 dark:border-zinc-600 text-zinc-500 dark:text-zinc-400'
+                      }`}>
+                      <Archive className="w-4 h-4" />
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-
-            {/* Email 2 */}
-            <div className={`
-                    rounded-[18px] p-3.5 flex gap-3 transition-colors cursor-pointer group/item
-                    ${customStyles.bgColor
-                ? 'bg-black/5 dark:bg-white/10'
-                : 'bg-zinc-100 dark:bg-[#334155]/40 hover:bg-zinc-200 dark:hover:bg-[#334155]/60'
-              }
-                 `}>
-              <div className="flex-1 min-w-0 flex flex-col gap-0.5">
-                <span className="text-[15px] font-semibold leading-tight">Kaggle</span>
-                <div className="flex items-center gap-1.5 overflow-hidden">
-                  <Pin className="w-3 h-3 text-red-500 fill-red-500 shrink-0" />
-                  <span className="text-[14px] font-medium leading-tight truncate">Mark Your Calendar...</span>
-                </div>
-                <span className="text-[13px] opacity-70 truncate leading-tight">Hi Himanshu Mishra, ...</span>
-              </div>
-              <div className="flex flex-col items-end justify-center">
-                <div className={`w-8 h-8 rounded-lg border flex items-center justify-center transition-colors ${customStyles.textColor
-                  ? 'border-current/20'
-                  : 'border-zinc-300 dark:border-zinc-600 text-zinc-500 dark:text-zinc-400'
-                  }`}>
-                  <Archive className="w-4 h-4" />
-                </div>
-              </div>
-            </div>
+              ))
+            )}
           </div>
         </div>
 

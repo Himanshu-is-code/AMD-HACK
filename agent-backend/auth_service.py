@@ -7,15 +7,14 @@ from google.auth.transport.requests import Request
 # Constants
 CLIENT_SECRETS_FILE = "client_secret.json"
 TOKEN_FILE = "token.json"
-TOKEN_FILE = "token.json"
 SCOPES = [
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/calendar.readonly",
-    "https://www.googleapis.com/auth/calendar.events"
+    "https://www.googleapis.com/auth/calendar.events",
+    "https://www.googleapis.com/auth/gmail.readonly"
 ]
-REDIRECT_URI = "http://localhost:5173" # Must match frontend URL
 REDIRECT_URI = "http://localhost:5173" # Must match frontend URL
 
 def get_flow():
@@ -28,6 +27,7 @@ def get_flow():
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI
     )
+    print(f"Auth Service: Flow initialized with scopes: {SCOPES}")
     return flow
 
 def exchange_code_for_token(code: str):
