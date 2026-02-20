@@ -32,6 +32,7 @@ interface WidgetInstance {
     y: number; // Percentage 0-100
     w: number; // Percentage 0-100
     h: number; // Percentage 0-100
+    isLeaving?: boolean;
 }
 
 
@@ -69,6 +70,20 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
     const [isWidgetsLocked, setIsWidgetsLocked] = useState(false);
     const [areWidgetsVisible, setAreWidgetsVisible] = useState(true);
+    const [isWidgetsLeaving, setIsWidgetsLeaving] = useState(false);
+
+    const toggleWidgetsVisible = () => {
+        if (areWidgetsVisible) {
+            // Trigger exit animation on every widget, then unmount after it plays
+            setIsWidgetsLeaving(true);
+            setTimeout(() => {
+                setAreWidgetsVisible(false);
+                setIsWidgetsLeaving(false);
+            }, 350);
+        } else {
+            setAreWidgetsVisible(true);
+        }
+    };
 
     // Floating Input State
     const [inputPos, setInputPos] = useState<{ x: number | null, y: number | null }>({ x: null, y: null });
@@ -202,13 +217,16 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         };
         setWidgets(prev => [...prev, newWidget]);
         setIsWidgetMenuOpen(false);
-        setWidgets(prev => [...prev, newWidget]);
-        setIsWidgetMenuOpen(false);
         if (!areWidgetsVisible) setAreWidgetsVisible(true);
     };
 
     const removeWidget = (id: string) => {
-        setWidgets(prev => prev.filter(w => w.id !== id));
+        // Mark it as leaving to trigger exit animation
+        setWidgets(prev => prev.map(w => w.id === id ? { ...w, isLeaving: true } : w));
+        // After animation completes, actually remove it
+        setTimeout(() => {
+            setWidgets(prev => prev.filter(w => w.id !== id));
+        }, 300);
     };
 
     const handleDragStart = (e: React.DragEvent, type: WidgetInstance['type']) => {
@@ -306,6 +324,19 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
     const [statusColor, setStatusColor] = useState('text-zinc-500');
 
+    // Compute the search-bar centre in canvas-% coords for widget spawn animation.
+    const getInputCenterPerc = (): { x: number; y: number } => {
+        const container = chatContainerRef.current;
+        if (!container || inputPos.x === null || inputPos.y === null) {
+            return { x: 50, y: 95 }; // fallback: bottom-centre
+        }
+        const { clientWidth, clientHeight } = container;
+        return {
+            x: ((inputPos.x + inputWidth / 2) / clientWidth) * 100,
+            y: ((inputPos.y + 24) / clientHeight) * 100, // 24 ≈ half of the 48px collapsed bar height
+        };
+    };
+
     useEffect(() => {
         if (!activeTaskStatus) return;
         switch (activeTaskStatus) {
@@ -317,6 +348,34 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
         }
     }, [activeTaskStatus]);
 
+    // Compute style for the floating/docked input bar.
+    // Always anchor at bottom:32px and use translateY to push to vertical center when empty.
+    // This means the transition is purely on `transform`, which CSS can interpolate smoothly.
+    const inputBarStyle: React.CSSProperties = (() => {
+        const containerH = chatContainerRef.current?.clientHeight ?? 0;
+        const containerW = chatContainerRef.current?.clientWidth ?? 0;
+        // From bottom:32px, the pill center is at containerH - 56px from top.
+        // To reach vertical center (containerH/2), translateY = -(containerH/2 - (containerH - 56)) = -(56 - containerH/2)
+        const upOffset = containerH > 0 ? -(containerH / 2 - 56) : 0;
+        const dockedWidth = containerW > 0 ? `${Math.min(containerW - 32, 672)}px` : '100%';
+        const isDragged = hasUserMovedInput && inputPos.x !== null && isEmpty;
+        const canAnimate = !isInputDragging && !isInputResizing && !isDragged;
+
+        if (isDragged) {
+            return { left: `${inputPos.x}px`, top: `${inputPos.y}px`, width: `${inputWidth}px`, maxWidth: '90vw' };
+        }
+        return {
+            left: '50%',
+            bottom: '32px',
+            width: isEmpty ? `${inputWidth}px` : dockedWidth,
+            padding: isEmpty ? undefined : '0 0.5rem',
+            transform: isEmpty ? `translateX(-50%) translateY(${upOffset}px)` : 'translateX(-50%)',
+            transition: canAnimate
+                ? 'transform 520ms cubic-bezier(0.4, 0, 0.2, 1), width 520ms cubic-bezier(0.4, 0, 0.2, 1)'
+                : undefined,
+        };
+    })();
+
     return (
         <div
             id="chat-container"
@@ -325,8 +384,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
             onDragOver={handleDragOver}
             onDrop={handleDrop}
         >
-            {/* Active Widgets */}
-            {areWidgetsVisible && (
+            {/* Active Widgets – keep mounted while leaving so the exit animation can play */}
+            {(areWidgetsVisible || isWidgetsLeaving) && (
                 <div className={`absolute inset-0 z-0 transition-all duration-700 ease-in-out ${!isEmpty ? 'blur-md opacity-40 pointer-events-none' : ''}`}>
                     {widgets.map(widget => (
                         <DraggableWidgetWrapper
@@ -337,6 +396,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                             onUpdate={updateWidget}
                             onRemove={() => removeWidget(widget.id)}
                             isLocked={isWidgetsLocked}
+                            isLeaving={widget.isLeaving || isWidgetsLeaving}
+                            originPoint={getInputCenterPerc()}
                             canvasRef={chatContainerRef}
                         >
                             {widget.type === 'clock' && <ClockWidget id={widget.id} isLocked={isWidgetsLocked} />}
@@ -445,7 +506,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                                 {isWidgetsLocked ? <Lock className="w-3.5 h-3.5" /> : <Unlock className="w-3.5 h-3.5" />}
                             </button>
                             <button
-                                onClick={() => setAreWidgetsVisible(!areWidgetsVisible)}
+                                onClick={toggleWidgetsVisible}
                                 className={`p-1.5 rounded-md transition-all ${!areWidgetsVisible ? 'bg-white dark:bg-zinc-600 shadow-sm text-zinc-900 dark:text-zinc-100' : 'text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300'}`}
                                 title={areWidgetsVisible ? "Hide Widgets" : "Show Widgets"}
                             >
@@ -634,10 +695,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     </div>
                 </div>
 
-                <div
-                    className={`absolute z-20 pointer-events-auto group/input ${isInputDragging || isInputResizing ? '' : 'transition-all duration-500 ease-in-out'}`}
-                    style={!isEmpty ? { left: '50%', transform: 'translateX(-50%)', bottom: '32px', width: '100%', maxWidth: '42rem', padding: '0 1rem' } : { left: inputPos.x !== null ? `${inputPos.x}px` : '50%', top: inputPos.y !== null ? `${inputPos.y}px` : 'auto', width: `${inputWidth}px`, maxWidth: '90vw', visibility: inputPos.x === null ? 'hidden' : 'visible' }}
-                >
+                {/* Outer input positioner: always bottom:32px, slides via translateY */}
+                <div className="absolute z-20 pointer-events-auto group/input" style={inputBarStyle}>
                     {areWidgetsVisible && !isWidgetsLocked && isEmpty && (
                         <>
                             <div className="absolute left-0 top-0 bottom-0 w-6 -ml-8 flex items-center justify-center cursor-grab active:cursor-grabbing opacity-0 group-hover/input:opacity-100 transition-opacity text-zinc-400" onMouseDown={(e) => { e.preventDefault(); setIsInputDragging(true); setHasUserMovedInput(true); inputDragStartRef.current = { x: e.clientX, y: e.clientY }; }}>

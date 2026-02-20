@@ -8,6 +8,9 @@ interface DraggableWidgetWrapperProps {
     onUpdate: (id: string, newPos: { x: number; y: number }, newSize: { width: number; height: number }) => void;
     onRemove?: () => void;
     isLocked: boolean;
+    isLeaving?: boolean;
+    /** Origin point for the entrance/exit animation, in canvas % coordinates (e.g. the search bar center) */
+    originPoint?: { x: number; y: number };
     minWidth?: number; // Pixels (converted to % internally for limits)
     minHeight?: number; // Pixels
     canvasRef: React.RefObject<HTMLDivElement>;
@@ -22,6 +25,8 @@ export const DraggableWidgetWrapper: React.FC<DraggableWidgetWrapperProps> = ({
     onUpdate,
     onRemove,
     isLocked,
+    isLeaving = false,
+    originPoint,
     minWidth = 150,
     minHeight = 100,
     canvasRef,
@@ -30,6 +35,12 @@ export const DraggableWidgetWrapper: React.FC<DraggableWidgetWrapperProps> = ({
 }) => {
     const [isDragging, setIsDragging] = useState(false);
     const [isResizing, setIsResizing] = useState(false);
+    // Entrance animation: start invisible, then transition to visible
+    const [isMounted, setIsMounted] = useState(false);
+    useEffect(() => {
+        const frame = requestAnimationFrame(() => setIsMounted(true));
+        return () => cancelAnimationFrame(frame);
+    }, []);
 
     const dragStartRef = useRef({ x: 0, y: 0, initialX: 0, initialY: 0 });
     const resizeStartRef = useRef({ x: 0, y: 0, initialW: 0, initialH: 0 });
@@ -122,6 +133,27 @@ export const DraggableWidgetWrapper: React.FC<DraggableWidgetWrapperProps> = ({
         };
     };
 
+    // Compute transform-origin so the scale animation radiates from the search bar's direction.
+    // originPoint is in canvas-% space; convert to widget-local-% space.
+    const transformOrigin = (() => {
+        if (!originPoint) return 'center center';
+        // Clamp so the origin stays within a visible range even if the bar is far outside the widget.
+        const ox = ((originPoint.x - position.x) / size.width) * 100;
+        const oy = ((originPoint.y - position.y) / size.height) * 100;
+        const cx = Math.min(Math.max(ox, -50), 150);
+        const cy = Math.min(Math.max(oy, -50), 150);
+        return `${cx}% ${cy}%`;
+    })();
+
+    // Animation states: entering = scale from 0.7 + opacity 0 → 1; leaving = scale back to 0.7 + opacity 0
+    const animStyle: React.CSSProperties = {
+        transform: (!isMounted || isLeaving) ? 'scale(0.6)' : 'scale(1)',
+        opacity: (!isMounted || isLeaving) ? 0 : 1,
+        transition: 'transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1), opacity 240ms ease',
+        transformOrigin,
+        pointerEvents: isLeaving ? 'none' : undefined,
+    };
+
     return (
         <div
             className={`absolute group ${isLocked ? '' : 'cursor-move'}`}
@@ -130,7 +162,8 @@ export const DraggableWidgetWrapper: React.FC<DraggableWidgetWrapperProps> = ({
                 top: `${position.y}%`,
                 width: `${size.width}%`,
                 height: `${size.height}%`,
-                zIndex: isDragging || isResizing ? 50 : zIndex
+                zIndex: isDragging || isResizing ? 50 : zIndex,
+                ...animStyle
             }}
             onMouseDown={handleMouseDown}
         >
