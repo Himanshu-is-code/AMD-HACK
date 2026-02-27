@@ -15,6 +15,7 @@ import gmail_service
 import meet_service
 from datetime import datetime  # Added missing import
 import logging
+from onnx_service import needs_internet
 
 # Setup logging
 # Setup logging
@@ -493,48 +494,19 @@ def get_unread_emails(limit: int = 2):
     return emails
 
 def analyze_internet_requirement(text: str) -> bool:
-    """Uses LLM to decide if a request requires internet."""
-    lowered = text.lower()
-    
-    # 1. STRICT OVERRIDE: Certain keywords ALWAYS mean internet.
-    # Don't trust the AI to not overthink it.
-    strict_keywords = ["news", "weather", "stock", "price of", "current event", "latest", "bse", "nse", "crypto", "bitcoin", "email", "gmail", "inbox", "unread"]
-    if any(k in lowered for k in strict_keywords):
-        logging.info(f"Internet Check: Keyword '{next(k for k in strict_keywords if k in lowered)}' found. strict=True")
-        return True
-
+    """
+    Analyzes if the request needs internet.
+    Optimized: Uses ONNX performance path instead of calling LLM for simple classification.
+    """
     try:
-        # Improved prompt to be more aggressive about needing internet for info retrieval
-        prompt = f"""
-        [INST]
-        You are a classifier that determines if a user request requires external tools/internet to be answered *accurately* and *fully*.
-        
-        Rules:
-        1. If the user asks for "news", "weather", "stocks", "sports scores", or "current events", answer YES.
-        2. If the user asks for specific facts that might be outdated in your training data, answer YES.
-        3. If the user asks for a creative task (poem, email, code) that relies on internal knowledge, answer NO.
-        4. If the user asks "how to" do something general (e.g. "how to tie a tie"), answer NO.
-        5. If the user asks "what is the latest...", answer YES.
-
-        Request: "{text}"
-        
-        Does this request require real-time internet access? Answer ONLY "YES" or "NO".
-        [/INST]
-        """
-        # Use FAST_MODEL for speed
-        response = call_ollama(prompt, model=FAST_MODEL)
-        
-        logging.info(f"Internet Check AI Response: {response}")
-        
-        # Check for YES
-        if "YES" in response.upper():
-            return True
-        return False
+        res = needs_internet(text)
+        logging.info(f"ONNX Internet Check for '{text}': {res}")
+        return res
     except Exception as e:
-        logging.error(f"AI Internet Check failed: {e}")
-        # Fallback to general keywords
-        keywords = ["research", "search", "find", "who", "what", "where"]
-        return any(k in lowered for k in keywords)
+        logging.error(f"ONNX Classification error, falling back: {e}")
+        # Fallback to simple keywords
+        internet_keywords = ["news", "weather", "latest", "stock", "price", "who is", "email", "gmail"]
+        return any(kw in text.lower() for kw in internet_keywords)
 
 @app.post("/agent")
 def agent(input: UserInput, background_tasks: BackgroundTasks):

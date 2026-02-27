@@ -17,5 +17,9 @@ For enterprise scaling (e.g., using the AMD Developer Cloud or local MI300X serv
 ## 3. Google ADK (Agentic Development Kit) Architecture
 Inspired by recent Google and AMD technical collaborations regarding AI Agents, we refactored the monolithic backend into a modular architecture.
 
-*   **Implementation:** We built an **Agent Orchestrator** (`agent_orchestrator.py`) utilizing the **"Agent Card"** pattern. Unique capabilities (like processing Calendar events or searching Gmail) are encapsulated into distinct cards.
-*   **Benefits:** This design pattern (championed by the Google ADK) allows the orchestration engine to be highly portable. The orchestrator makes routing decisions using the local AMD-powered LLM, then triggers the specific Agent Card, making the system highly scalable and easy to maintain as new tools are added.
+## 4. ONNX NPU Integration (Ryzen™ AI)
+To maximize battery life and offload background tasks from the CPU/GPU, we've integrated **ONNX Runtime** optimization.
+
+*   **Implementation:** The `onnx_service.py` handles intent classification (e.g., determining if a task needs internet) using a lightweight ONNX model. 
+*   **Hardware Routing:** The service is configured to prioritize the **Vitis™ AI Execution Provider**. On laptops with **AMD Ryzen™ AI (XDNA™)** processors, this allows background classification to run entirely on the ultra-low-power NPU.
+*   **Benefits:** This keeps the dedicated GPU free for heavy agent reasoning while ensuring the "always-on" background logic doesn't drain the user's battery.
