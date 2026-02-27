@@ -142,7 +142,7 @@ const App: React.FC = () => {
     });
   };
 
-  const handleSendMessage = async (content: string, file?: File | null, isWebSearch?: boolean) => {
+  const handleSendMessage = async (content: string, file?: File | null, isWebSearch?: boolean, dismissedIntents?: string[]) => {
     let chatId = currentChatId;
     let currentHistory: Message[] = [];
 
@@ -262,7 +262,7 @@ const App: React.FC = () => {
         }));
       } else {
         // Normal Agent Backend Router flow
-        const agentResponse = await sendToAgent(content);
+        const agentResponse = await sendToAgent(content, dismissedIntents);
 
         if (agentResponse.id) {
           setActiveTaskId(agentResponse.id);

@@ -48,6 +48,7 @@ The backend acts as a secure intermediary for local AI operations and Google Wor
     - `main.py`: Entry point and API routing.
     - `agent_orchestrator.py`: **[NEW]** Modular orchestrator that manages "Agent Cards" for specialized tasks (following Google ADK patterns).
     - `auth_service.py`: Manages Google OAuth2 flow.
+    - `classroom_service.py`: **[NEW]** Interaction layer for Google Classroom API.
 - **Local AI Integration**:
     - Integrates with **Ollama** or **vLLM** via a hardware-agnostic LLM abstraction.
     - Supports **AMD Instinct GPUs**, **NVIDIA CUDA**, and **Intel (CPU/GPU)**.
@@ -55,12 +56,16 @@ The backend acts as a secure intermediary for local AI operations and Google Wor
 - **Task Management**:
     - Implements an asynchronous task queue with persistence in `tasks.json`.
     - Features a background monitor thread that resumes queued tasks once internet connectivity is restored.
+- **Sovereign Intelligence (ONNX)**:
+    - **[NEW]** Uses **ONNX Runtime** for high-performance, low-power intent classification.
+    - Specifically optimized for **AMD Ryzen™ AI** NPUs via the `Vitis™ AI` execution provider.
+    - Handles critical logic (like internet requirement analysis) at the edge, reducing LLM calls.
 
 ### 3. AI & Integration Flow
 Flowstate uses a "Hybrid, Cross-Platform AI" approach:
 - **Local AI (Ollama/vLLM)**: Handles "sovereign" tasks like planning and data extraction. Optimized for AMD (ROCm), NVIDIA (CUDA), and Intel.
 - **Cloud AI (Gemini)**: Handles search grounding and high-context web research client-side.
-- **Orchestration**: The `AgentOrchestrator` decomposes user requests into tasks executed by specialized agent cards (Calendar, Gmail).
+- **Orchestration**: The `AgentOrchestrator` decomposes user requests into tasks executed by specialized agent cards (Calendar, Gmail, Meet, Classroom).
 
 ### 4. Data Flow & Persistence
 - **State**: The application state is synchronized between the frontend (React) and the backend (FastAPI).
@@ -81,5 +86,5 @@ Flowstate uses a "Hybrid, Cross-Platform AI" approach:
 | **AI (Hardware)** | **AMD ROCm**, **NVIDIA CUDA**, **Intel (CPU/OpenVINO)** |
 | **AI (Serving)** | **Ollama**, **vLLM** (OpenAI-compatible) |
 | **AI (Models)** | Llama 3.2 (Local), Gemini 2.0 Flash (Cloud Research) |
-| **APIs** | Google Calendar API, Gmail API, Google Drive API |
+| **APIs** | Google Calendar API, Gmail API, Google Drive API, Google Classroom API |
 | **Tools** | chrono-node (Date Parsing), react-markdown |

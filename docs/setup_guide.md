@@ -24,6 +24,10 @@ Ollama is the easiest way to run LLMs locally on any hardware (AMD, NVIDIA, Inte
 ### For Intel (OpenVINO/CPU)
 - Ollama will default to high-performance CPU inference. For Intel GPUs, specialized setups like OpenVINO are available but Ollama's CPU path is often sufficient for `llama3.2`.
 
+### For Ryzen AI (NPU)
+- The backend's **Intent Classifier** supports native acceleration on AMD Ryzen NPUs via **ONNX Runtime**.
+- If your hardware supports it, the backend will automatically load the `VitisAIExecutionProvider` for high-efficiency, low-power inference of structural tasks.
+
 ## 3. Backend Configuration
 The backend is now hardware-agnostic. By default, it looks for Ollama on `localhost:11434`.
 
@@ -91,4 +95,31 @@ You can also ask the AI agent directly:
 - *"Create a Google Meet for me"*
 - *"Show participants for conferenceRecords/abc123"*
 - *"Get transcript for conferenceRecords/abc123"*
+---
+
+## 6. Google Classroom Integration
+
+The agent now supports **Google Classroom**, allowing you to:
+- List your active courses
+- Check assignments/coursework for a specific class
+- View class announcements
+
+### Required: Re-authenticate After Update
+
+The Classroom integration requires new OAuth scopes:
+- `classroom.courses.readonly`
+- `classroom.coursework.me.readonly`
+- `classroom.announcements.readonly`
+
+**You must re-authenticate to grant these permissions:**
+1. Open the frontend.
+2. Click **Connect Google Account** (or Sign In).
+3. Authorize the new Classroom permissions.
+
+### Agent Commands
+
+Try asking the AI:
+- *"What are my Google Classroom courses?"*
+- *"Show me assignments for Math class"*
+- *"Are there any new announcements in Physics?"*
 

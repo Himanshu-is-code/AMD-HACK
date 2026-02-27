@@ -149,3 +149,64 @@ This session focused on fixing regressions and improving the reliability of the 
 - `ChatArea.tsx`: Major refactor of input positioning and transition logic.
 - `DraggableWidgetWrapper.tsx`: Added state-driven entrance/exit animations.
 - `RETROSPECTIVE.md`: Documented Phase 4 progress.
+
+---
+
+## Phase 5: Google Classroom Integration (Feb 27, 2026)
+
+### 🚀 Key Achievements
+
+#### 1. Academic Triage
+- **Feature**: Added a dedicated Classroom Agent to the orchestrator.
+- **Capability**: The agent can now list courses, fetch coursework, and summarize announcements.
+- **Context Awareness**: The agent can resolve fuzzy class names (e.g., "Math") to specific Google Classroom course IDs.
+
+#### 2. Visual "Intent" Feedback
+- **Feature**: Added a teal **Classroom** intent pill to the chat input.
+- **UX**: Provides immediate visual feedback when the user types academic-related keywords, maintaining consistency with the existing Workspace triggers.
+
+### 🔧 Challenges & Solutions
+
+#### 1. The "Invisible Scopes" Bug
+- **Problem**: Even after updating the backend, the Google login screen didn't ask for Classroom permissions, leading to `403 Forbidden` errors.
+- **Root Cause**: The frontend OAuth helper in `utils/auth.ts` was hardcoded with a specific `scope` string that didn't include the new requirements.
+- **Solution**: Updated the frontend auth utility to include the necessary Classroom read-only scopes in the authorization URL.
+
+#### 2. Fuzzy Course Resolution
+- **Problem**: Users say "assignments for Math," but the API needs a long alphanumeric Course ID.
+- **Solution**: Implemented a multi-step resolution logic in `agent_orchestrator.py`:
+    1. Fetch all active courses.
+    2. Use the LLM to extract the coarse course name.
+    3. Perform a string-match against the user's courses to find the ID.
+
+### 📁 Files Modified
+- `auth_service.py`: Added Classroom scopes to backend auth handler.
+- `classroom_service.py`: **[NEW]** Created to handle Classroom API calls.
+- `agent_orchestrator.py`: Registered Classroom agent and implemented execution logic.
+- `main.py`: Added REST endpoints for manual verification.
+- `auth.ts`: Updated frontend scope string.
+- `ChatArea.tsx`: Added Classroom intent pill.
+
+---
+
+## Phase 6: Intelligence at the Edge & Navigation Polish (Feb 27, 2026)
+
+### 🚀 Key Achievements
+
+#### 1. Sovereign Intent Classification (ONNX)
+- **Feature**: Integrated **ONNX Runtime** into the backend for ultra-fast intent classification.
+- **AMD Ryzen™ AI Optimization**: The system now prioritizes the **Vitis™ AI Execution Provider**, allowing the intent classifier (e.g., checking if internet is needed) to run on the **NPU**.
+- **Impact**: Reduces latency for simple structural decisions and preserves battery life by offloading work from the GPU/CPU to the specialized Ryzen NPU.
+
+#### 2. Chat Navigator (Right-Side Hide Bar)
+- **Feature**: Developed a "ghost" message navigator on the right side of the screen.
+- **Interaction**: Collapses to simple dashes by default to preserve focus. On hover, it expands to show message snippets and active message tracking, allowing users to jump through long conversations instantly.
+
+#### 3. Animated Intent Pill Badges
+- **Feature**: Added a dynamic "pre-execution" layer in the chat input.
+- **Feedback**: As the user types, the system visually highlights which Workspace tools (Gmail, Calendar, Meet, Classroom, Drive) will be triggered using animated badges.
+- **Control**: Users can click the "×" on a badge to explicitly skip that tool for the current message, providing granular control over agent orchestration.
+
+### 💡 Lessons Learned
+- **Edge Efficiency**: Moving classification to the NPU via ONNX is significantly faster than querying even a quantized 3B local LLM for simple binary decisions.
+- **Visual Foresight**: Giving users a visual "preview" (pills) of what the agent is about to do reduces "tool surprise" and improves trust in the orchestration logic.

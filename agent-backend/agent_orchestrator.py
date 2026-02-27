@@ -5,14 +5,16 @@ from typing import List, Optional, Callable
 import calendar_service
 import gmail_service
 import meet_service
+import classroom_service
 
 class AgentCard:
     """Represents a specialized agent capability (ADK pattern)."""
-    def __init__(self, name: str, description: str, triggers: List[str], execute_func: Callable):
+    def __init__(self, name: str, description: str, triggers: List[str], execute_func: Callable, intent_id: str = None):
         self.name = name
         self.description = description
         self.triggers = triggers
         self.execute_func = execute_func
+        self.intent_id = intent_id
 
 class AgentOrchestrator:
     """Orchestrates multiple agents/tools based on user requests."""
@@ -28,7 +30,8 @@ class AgentOrchestrator:
             name="Calendar Agent",
             description="Manages events, meetings, and appointments.",
             triggers=["calendar", "calender", "meeting", "appointment", "event", "remind", "mark"],
-            execute_func=self._execute_calendar
+            execute_func=self._execute_calendar,
+            intent_id="calendar"
         ))
         
         # Gmail Agent Card
@@ -36,7 +39,8 @@ class AgentOrchestrator:
             name="Gmail Agent",
             description="Summarizes emails and searches for specific information in the inbox.",
             triggers=["email", "gmail", "inbox", "unread", "from", "about", "summarize"],
-            execute_func=self._execute_gmail
+            execute_func=self._execute_gmail,
+            intent_id="email"
         ))
 
         # Meet Agent Card
@@ -45,17 +49,42 @@ class AgentOrchestrator:
             description="Creates and manages Google Meet video conferences, and retrieves participants and transcripts.",
             triggers=["meet", "meeting link", "video call", "conference", "join meeting",
                       "create meet", "participants", "transcript", "google meet"],
-            execute_func=self._execute_meet
+            execute_func=self._execute_meet,
+            intent_id="meet"
         ))
+
+        # Classroom Agent Card
+        self.agents.append(AgentCard(
+            name="Classroom Agent",
+            description="Retrieves Google Classroom courses, assignments, and announcements.",
+            triggers=["classroom", "course", "courses", "assignment", "assignments", "homework", "announcement", "announcements", "grades", "class", "classes"],
+            execute_func=self._execute_classroom,
+            intent_id="classroom"
+        ))
+
+    @staticmethod
+    def _matches_triggers(text: str, triggers: list) -> bool:
+        """Word-boundary aware trigger matching so 'meet' doesn't fire on 'meeting'."""
+        import re
+        for trigger in triggers:
+            pattern = r'\b' + re.escape(trigger) + r'\b'
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+        return False
 
     def plan_and_execute(self, task_id: str, task_text: str, context: dict) -> str:
         """Decomposes task and routes to appropriate agents."""
         results = []
-        lowered_text = task_text.lower()
         
         # Simple routing based on triggers (can be enhanced with LLM routing)
+        dismissed_intents = context.get("dismissed_intents", [])
+        logging.info(f"Task {task_id}: dismissed_intents={dismissed_intents}")
         for agent in self.agents:
-            if any(trigger in lowered_text for trigger in agent.triggers):
+            if agent.intent_id and agent.intent_id in dismissed_intents:
+                logging.info(f"Skipping {agent.name} — dismissed by user.")
+                continue
+
+            if self._matches_triggers(task_text, agent.triggers):
                 logging.info(f"Routing task {task_id} to {agent.name}")
                 result = agent.execute_func(task_id, task_text, context)
                 if result:
@@ -341,3 +370,104 @@ Nothing else.
 
         # Return the first (most recent) record
         return records[0]["name"]
+
+    def _execute_classroom(self, task_id: str, task_text: str, context: dict) -> Optional[str]:
+        from main import call_llm, FAST_MODEL, check_internet
+
+        if not check_internet():
+            return None
+
+        # Intent classification
+        intent_prompt = f"""
+        [INST]
+        Classify this request: "{task_text}"
+        Choose ONE:
+        1. COURSES - User wants to see their enrolled classes/courses.
+        2. ASSIGNMENTS - User wants to see their coursework/homework/assignments.
+        3. ANNOUNCEMENTS - User wants to see announcements/posts for a class.
+        
+        Answer with ONLY one word: COURSES, ASSIGNMENTS, or ANNOUNCEMENTS.
+        [/INST]
+        """
+        intent = call_llm(intent_prompt, model=FAST_MODEL).strip().upper()
+        logging.info(f"Classroom intent classified as: {intent}")
+
+        # COURSES
+        if "COURSE" in intent:
+            result = classroom_service.list_courses()
+            if "error" in result:
+                return f"\n\n❌ Could not retrieve courses: {result['error']}"
+            courses = result.get("courses", [])
+            if not courses:
+                return "\n\n🏫 You are not enrolled in any active Google Classroom courses."
+            lines = [f"🏫 **Your Google Classroom Courses:**"]
+            for c in courses:
+                lines.append(f"- **{c.get('name')}** (Section: {c.get('section', 'N/A')}) - [Link]({c.get('alternateLink')})")
+            return "\n".join(lines)
+
+        # Helper to find a specific course if they asked for assignments or announcements
+        extract_course_prompt = f"""
+        [INST]
+        Extract the course or class name from: "{task_text}"
+        Return ONLY the name of the class (e.g. 'Math', 'History', 'Physics').
+        If none mentioned, return NONE.
+        [/INST]
+        """
+        course_name_query = call_llm(extract_course_prompt, model=FAST_MODEL).strip()
+        
+        # Need to fetch courses to resolve ID
+        courses_res = classroom_service.list_courses()
+        if "error" in courses_res:
+             return f"\n\n❌ Error fetching courses: {courses_res['error']}"
+        courses = courses_res.get("courses", [])
+        
+        target_course = None
+        if course_name_query.upper() != "NONE":
+             for c in courses:
+                 if course_name_query.lower() in c.get("name", "").lower():
+                     target_course = c
+                     break
+        
+        if not target_course and courses:
+            if len(courses) == 1:
+                target_course = courses[0]
+            else:
+                return "\n\n❓ Please specify which course you'd like to check (e.g., 'assignments for Math')."
+        elif not courses:
+            return "\n\n🏫 You are not enrolled in any active Google Classroom courses."
+
+        course_id = target_course["id"]
+        course_name = target_course["name"]
+
+        # ASSIGNMENTS
+        if "ASSIGNMENT" in intent:
+            result = classroom_service.list_coursework(course_id)
+            if "error" in result:
+                return f"\n\n❌ Could not retrieve assignments: {result['error']}"
+            work = result.get("courseWork", [])
+            if not work:
+                return f"\n\n✅ No assignments found for **{course_name}**."
+            lines = [f"📚 **Assignments for {course_name}:**"]
+            for w in work[:5]:
+                due_date_str = "No due date"
+                if "dueDate" in w:
+                    d = w["dueDate"]
+                    due_date_str = f"Due: {d.get('year')}-{d.get('month'):02d}-{d.get('day'):02d}"
+                lines.append(f"- **{w.get('title')}** ({due_date_str}) - [View]({w.get('alternateLink')})")
+            return "\n".join(lines)
+
+        # ANNOUNCEMENTS
+        if "ANNOUNCEMENT" in intent:
+            result = classroom_service.list_announcements(course_id)
+            if "error" in result:
+                return f"\n\n❌ Could not retrieve announcements: {result['error']}"
+            ann = result.get("announcements", [])
+            if not ann:
+                return f"\n\n📣 No announcements found for **{course_name}**."
+            lines = [f"📣 **Announcements for {course_name}:**"]
+            for a in ann[:5]:
+                text = a.get("text", "").replace('\\n', ' ')[:100] + "..."
+                lines.append(f"- {text} - [View]({a.get('alternateLink')})")
+            return "\n".join(lines)
+
+        return "\n\n❓ I understand this is about Google Classroom but I wasn't sure what you needed. Try asking 'what are my courses' or 'assignments for math'."

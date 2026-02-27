@@ -18,6 +18,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/meetings.space.created",
     # Google Meet — read-only access for participants & transcripts
     "https://www.googleapis.com/auth/meetings.space.readonly",
+    # Google Classroom
+    "https://www.googleapis.com/auth/classroom.courses.readonly",
+    "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
+    "https://www.googleapis.com/auth/classroom.announcements.readonly",
 ]
 REDIRECT_URI = "http://localhost:5173" # Must match frontend URL
 

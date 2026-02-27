@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { handleGoogleLogin } from '../utils/auth';
 import { getAuthStatus, logoutGoogle, getGoogleUser } from '../services/agentService';
-import { Paperclip, PanelLeft, Bot, ListTodo, Settings, UserCircle, Plus, Search, LayoutGrid, Clock, MinusCircle, Calendar, HardDrive, Mail, StickyNote, TrendingUp, Move, Lock, Unlock, Eye, EyeOff, GripVertical, Globe, File, X } from 'lucide-react';
+import { Paperclip, PanelLeft, Bot, ListTodo, Settings, UserCircle, Plus, Search, LayoutGrid, Clock, MinusCircle, Calendar, HardDrive, Mail, StickyNote, TrendingUp, Move, Lock, Unlock, Eye, EyeOff, GripVertical, Globe, File, X, Video, CloudSun, MessageSquare, BookOpen, Mic } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message, Role } from '../types';
@@ -15,7 +15,7 @@ import { DraggableWidgetWrapper } from './DraggableWidgetWrapper';
 
 interface ChatAreaProps {
     messages: Message[];
-    onSendMessage: (content: string, file?: File | null, isWebSearch?: boolean) => void;
+    onSendMessage: (content: string, file?: File | null, isWebSearch?: boolean, dismissedIntents?: string[]) => void;
     isSidebarOpen: boolean;
     toggleSidebar: () => void;
     isLoading: boolean;
@@ -36,6 +36,91 @@ interface WidgetInstance {
 }
 
 
+
+// ─── Intent Detection ────────────────────────────────────────────────────────
+interface TaskIntent {
+    id: string;
+    label: string;
+    icon: React.ElementType;
+    color: string;
+    bg: string;
+    keywords: RegExp;
+}
+
+const TASK_INTENTS: TaskIntent[] = [
+    {
+        id: 'email',
+        label: 'Email',
+        icon: Mail,
+        color: 'text-sky-600 dark:text-sky-400',
+        bg: 'bg-sky-50 dark:bg-sky-900/30 border-sky-200 dark:border-sky-700',
+        keywords: /\b(email|mail|inbox|send|reply|forward|draft|compose|gmail|message|unread|attachment|cc|bcc)\b/i,
+    },
+    {
+        id: 'calendar',
+        label: 'Calendar',
+        icon: Calendar,
+        color: 'text-emerald-600 dark:text-emerald-400',
+        bg: 'bg-emerald-50 dark:bg-emerald-900/30 border-emerald-200 dark:border-emerald-700',
+        keywords: /\b(calendar|schedule|event|meeting|appointment|remind|reminder|today|tomorrow|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday|date|time|slot|book|reserve|agenda)\b/i,
+    },
+    {
+        id: 'meet',
+        label: 'Google Meet',
+        icon: Video,
+        color: 'text-violet-600 dark:text-violet-400',
+        bg: 'bg-violet-50 dark:bg-violet-900/30 border-violet-200 dark:border-violet-700',
+        keywords: /\b(meet|meeting|video call|conference|zoom|teams|transcript|participant|join|call|record)\b/i,
+    },
+    {
+        id: 'classroom',
+        label: 'Classroom',
+        icon: BookOpen,
+        color: 'text-teal-600 dark:text-teal-400',
+        bg: 'bg-teal-50 dark:bg-teal-900/30 border-teal-200 dark:border-teal-700',
+        keywords: /\b(classroom|course|courses|class|classes|assignment|assignments|homework|announcement|announcements|grade|grades|coursework)\b/i,
+    },
+    {
+        id: 'drive',
+        label: 'Drive',
+        icon: HardDrive,
+        color: 'text-amber-600 dark:text-amber-400',
+        bg: 'bg-amber-50 dark:bg-amber-900/30 border-amber-200 dark:border-amber-700',
+        keywords: /\b(drive|file|folder|document|doc|sheet|slides|upload|download|storage|gdrive|find file|open file|share)\b/i,
+    },
+    {
+        id: 'search',
+        label: 'Web Search',
+        icon: Globe,
+        color: 'text-blue-600 dark:text-blue-400',
+        bg: 'bg-blue-50 dark:bg-blue-900/30 border-blue-200 dark:border-blue-700',
+        keywords: /\b(search|google|look up|find|latest|news|current|what is|who is|where is|how to|wiki|website|browse|internet)\b/i,
+    },
+    {
+        id: 'stock',
+        label: 'Stocks',
+        icon: TrendingUp,
+        color: 'text-green-600 dark:text-green-400',
+        bg: 'bg-green-50 dark:bg-green-900/30 border-green-200 dark:border-green-700',
+        keywords: /\b(stock|price|market|share|invest|portfolio|ticker|nasdaq|nyse|crypto|bitcoin|ethereum|trading|bull|bear)\b/i,
+    },
+    {
+        id: 'weather',
+        label: 'Weather',
+        icon: CloudSun,
+        color: 'text-orange-500 dark:text-orange-400',
+        bg: 'bg-orange-50 dark:bg-orange-900/30 border-orange-200 dark:border-orange-700',
+        keywords: /\b(weather|temperature|forecast|rain|sunny|cloudy|humidity|wind|storm|snow|climate|degrees|celsius|fahrenheit)\b/i,
+    },
+    {
+        id: 'notes',
+        label: 'Notes',
+        icon: StickyNote,
+        color: 'text-yellow-600 dark:text-yellow-400',
+        bg: 'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-200 dark:border-yellow-700',
+        keywords: /\b(note|notes|write down|remember|save|jot|memo|notebook|keep)\b/i,
+    },
+];
 
 const Timer = () => {
     const [seconds, setSeconds] = useState(0);
@@ -65,6 +150,14 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     const fileInputRef = useRef<HTMLInputElement>(null);
     const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
     const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+
+    // Intent detection
+    const [dismissedIntents, setDismissedIntents] = useState<Set<string>>(new Set());
+    const detectedIntents = TASK_INTENTS.filter(
+        intent => intent.keywords.test(inputValue) && !dismissedIntents.has(intent.id)
+    );
+    const dismissIntent = (id: string) =>
+        setDismissedIntents(prev => new Set([...prev, id]));
 
     // Copilot State
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -172,9 +265,10 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
     const handleSend = () => {
         if ((inputValue.trim() || selectedFile) && !isLoading) {
-            onSendMessage(inputValue, selectedFile, isWebSearch);
+            onSendMessage(inputValue, selectedFile, isWebSearch, Array.from(dismissedIntents));
             setInputValue('');
             setSelectedFile(null);
+            setDismissedIntents(new Set()); // reset for next message
             // Optionally leave web search toggled based on preference, resetting it for now
             // setIsWebSearch(false);
             setIsFocused(false);
@@ -630,7 +724,12 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     <div className="max-w-3xl mx-auto space-y-6 pb-32 pt-4">
                         {messages.map((msg, index) => (
                             <div key={msg.id} ref={el => { messageRefs.current[msg.id] = el; }} className={`flex gap-4 ${msg.role === Role.USER ? 'justify-end' : 'justify-start'}`}>
-                                <div className={`max-w-[85%] rounded-2xl px-5 py-3.5 leading-relaxed whitespace-pre-wrap shadow-sm ${msg.role === Role.USER ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100' : 'bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 text-zinc-800 dark:text-zinc-200'}`}>
+                                <div className={`max-w-[85%] rounded-2xl px-5 py-3.5 leading-relaxed whitespace-pre-wrap shadow-sm ${msg.role === Role.USER
+                                    ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100'
+                                    : msg.sources && msg.sources.length > 0
+                                        ? 'bg-gradient-to-br from-blue-500 to-blue-700 text-white border border-blue-400/30 shadow-blue-500/20'
+                                        : 'bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 text-zinc-800 dark:text-zinc-200'
+                                    }`}>
                                     <ReactMarkdown
                                         remarkPlugins={[remarkGfm]}
                                         components={{
@@ -677,9 +776,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
                                     {/* Display Sources */}
                                     {msg.sources && msg.sources.length > 0 && (
-                                        <div className="mt-4 pt-3 border-t border-zinc-200 dark:border-zinc-800">
-                                            <div className="flex items-center gap-2 mb-2 text-xs font-semibold text-zinc-500 uppercase tracking-wider">
-                                                <Search className="w-3 h-3" />
+                                        <div className="mt-4 pt-3 border-t border-white/20">
+                                            <div className="flex items-center gap-2 mb-2 text-xs font-semibold text-white/70 uppercase tracking-wider">
+                                                <Globe className="w-3 h-3" />
                                                 <span>SOURCES</span>
                                             </div>
                                             <div className="flex flex-wrap gap-2">
@@ -696,9 +795,9 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                                                             href={source.url}
                                                             target="_blank"
                                                             rel="noopener noreferrer"
-                                                            className="flex items-center gap-2 pl-1 pr-3 py-1.5 bg-zinc-100 dark:bg-zinc-800 hover:bg-zinc-200 dark:hover:bg-zinc-700 rounded-full text-xs text-zinc-700 dark:text-zinc-300 transition-colors border border-zinc-200 dark:border-zinc-700"
+                                                            className="flex items-center gap-2 pl-1 pr-3 py-1.5 bg-white/20 hover:bg-white/30 rounded-full text-xs text-white transition-colors border border-white/20 backdrop-blur-sm"
                                                         >
-                                                            <div className="w-4 h-4 rounded-full bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-400 flex items-center justify-center text-[10px] font-bold">
+                                                            <div className="w-4 h-4 rounded-full bg-white/30 text-white flex items-center justify-center text-[10px] font-bold">
                                                                 {idx + 1}
                                                             </div>
                                                             <span className="truncate max-w-[150px] font-medium">{hostname}</span>
@@ -773,6 +872,28 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                     )}
 
                     <div className="w-full mx-auto flex flex-col items-center">
+                        {/* Intent Icons — shown above the input while typing */}
+                        {detectedIntents.length > 0 && inputValue.trim().length > 0 && (
+                            <div className="flex items-center gap-1.5 mb-2 flex-wrap justify-center animate-in fade-in slide-in-from-bottom-2 duration-300">
+                                {detectedIntents.map((intent) => (
+                                    <div
+                                        key={intent.id}
+                                        title={`${intent.label} — click × to skip this task`}
+                                        className={`flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-full border text-xs font-medium transition-all duration-200 shadow-sm ${intent.color} ${intent.bg}`}
+                                    >
+                                        <intent.icon className="w-3 h-3 flex-shrink-0" />
+                                        <span className="mr-0.5">{intent.label}</span>
+                                        <button
+                                            onClick={() => dismissIntent(intent.id)}
+                                            title={`Remove ${intent.label} intent`}
+                                            className="w-4 h-4 rounded-full flex items-center justify-center opacity-60 hover:opacity-100 hover:bg-black/10 dark:hover:bg-white/20 transition-all flex-shrink-0"
+                                        >
+                                            <X className="w-2.5 h-2.5" />
+                                        </button>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                         <div className={`w-full relative transition-all duration-300 overflow-hidden ${isExpanded ? 'bg-white dark:bg-zinc-900 rounded-[32px] shadow-2xl border border-zinc-200/60 dark:border-zinc-800 p-4' : 'bg-white/60 dark:bg-zinc-900/60 backdrop-blur-xl border border-zinc-200/50 dark:border-zinc-700/50 rounded-full h-12 cursor-text shadow-xl'}`} onClick={() => { if (!isExpanded) { setIsFocused(true); setTimeout(() => textareaRef.current?.focus(), 10); } }}>
                             <div className={`absolute inset-0 flex items-center justify-center gap-2 text-zinc-500 transition-opacity duration-200 ${isExpanded ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
                                 <Search className="w-4 h-4" />

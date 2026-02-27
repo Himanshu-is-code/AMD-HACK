@@ -2,7 +2,7 @@ import { extractDate } from '../utils/dateUtils';
 
 const AGENT_URL = import.meta.env.VITE_AGENT_URL || "http://localhost:8000";
 
-export async function sendToAgent(text: string) {
+export async function sendToAgent(text: string, dismissedIntents: string[] = []) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 310000); // 310s timeout
 
@@ -21,7 +21,8 @@ export async function sendToAgent(text: string) {
             body: JSON.stringify({
                 text,
                 client_time: new Date().toString(),
-                extracted_time: extractedTime
+                extracted_time: extractedTime,
+                dismissed_intents: dismissedIntents
             }),
             signal: controller.signal
         });

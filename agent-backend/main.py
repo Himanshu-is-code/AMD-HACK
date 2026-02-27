@@ -49,6 +49,7 @@ class UserInput(BaseModel):
     text: str
     client_time: Optional[str] = None # Capture client-side time string
     extracted_time: Optional[str] = None # Captured by frontend (chrono-node)
+    dismissed_intents: Optional[List[str]] = []
 
 import google.generativeai as genai
 from fastapi.encoders import jsonable_encoder
@@ -69,6 +70,7 @@ class Task(BaseModel):
     model_used: str = FAST_MODEL
     sources: Optional[List[dict]] = []
     extracted_time: Optional[str] = None # Store for execution
+    dismissed_intents: Optional[List[str]] = []
 
 class ResumeRequest(BaseModel):
     api_key: str
@@ -356,7 +358,7 @@ from agent_orchestrator import AgentOrchestrator
 # Initialize ADK Orchestrator
 orchestrator = AgentOrchestrator(llm_caller=call_llm)
 
-def execute_task_logic(task_id: str, task_text: str, client_time: str = None, requires_internet: bool = True, extracted_time: str = None):
+def execute_task_logic(task_id: str, task_text: str, client_time: str = None, requires_internet: bool = True, extracted_time: str = None, dismissed_intents: List[str] = None):
     """
     Executes the actual task logic via the AgentOrchestrator.
     Returns True if completed, False if paused due to network/error.
@@ -373,7 +375,8 @@ def execute_task_logic(task_id: str, task_text: str, client_time: str = None, re
         # --- EXECUTION VIA ADK ORCHESTRATOR ---
         context = {
             "client_time": client_time,
-            "extracted_time": extracted_time
+            "extracted_time": extracted_time,
+            "dismissed_intents": dismissed_intents or []
         }
         
         result_update = orchestrator.plan_and_execute(task_id, task_text, context)
@@ -395,7 +398,7 @@ def execute_task_logic(task_id: str, task_text: str, client_time: str = None, re
         return False
 
 
-def background_task_simulation(task_id: str, requires_internet: bool, task_text: str, client_time: str = None, extracted_time: str = None):
+def background_task_simulation(task_id: str, requires_internet: bool, task_text: str, client_time: str = None, extracted_time: str = None, dismissed_intents: List[str] = None):
     """Initial entry point for new tasks."""
     # Simulate thinking/planning time
     time.sleep(2)
@@ -406,7 +409,7 @@ def background_task_simulation(task_id: str, requires_internet: bool, task_text:
         return # EXIT. Monitor will pick it up later.
         
     # If we have internet (or don't need it), run immediately
-    execute_task_logic(task_id, task_text, client_time, requires_internet, extracted_time)
+    execute_task_logic(task_id, task_text, client_time, requires_internet, extracted_time, dismissed_intents)
 
 def monitor_internet_queue():
     """Global thread that checks for internet and resumes queued tasks."""
@@ -426,10 +429,11 @@ def monitor_internet_queue():
                         # Pass requires_internet=True (or read from task) because if it was queued, it likely needs internet
                         # But safer to read from task if property exists
                         req_net = task.get("requires_internet", True)
+                        dismissed = task.get("dismissed_intents", [])
                         
                         threading.Thread(
                             target=execute_task_logic, 
-                            args=(task["id"], task["original_request"], None, req_net) 
+                            args=(task["id"], task["original_request"], None, req_net, task.get("extracted_time"), dismissed) 
                         ).start()
         except Exception as e:
             logging.error(f"Monitor Thread Error: {e}")
@@ -535,7 +539,8 @@ def agent(input: UserInput, background_tasks: BackgroundTasks):
         "status": "planned",
         "requires_internet": requires_internet,
         "model_used": selected_model,
-        "extracted_time": input.extracted_time
+        "extracted_time": input.extracted_time,
+        "dismissed_intents": input.dismissed_intents
     }
 
     # 4. Save to disk
@@ -548,7 +553,8 @@ def agent(input: UserInput, background_tasks: BackgroundTasks):
         requires_internet, 
         input.text,
         input.client_time,
-        input.extracted_time # Pass the extracted time
+        input.extracted_time, # Pass the extracted time
+        input.dismissed_intents
     )
 
     return new_task
@@ -673,6 +679,34 @@ def get_meet_transcript_entries(transcript_name: str):
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
+
+
+# ---------------------------------------------------------------------------
+# Google Classroom endpoints
+# ---------------------------------------------------------------------------
+
+import classroom_service
+
+@app.get("/classroom/courses")
+def get_courses():
+    res = classroom_service.list_courses()
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+@app.get("/classroom/courses/{course_id}/coursework")
+def get_coursework(course_id: str):
+    res = classroom_service.list_coursework(course_id)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+@app.get("/classroom/courses/{course_id}/announcements")
+def get_announcements(course_id: str):
+    res = classroom_service.list_announcements(course_id)
+    if "error" in res:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
 
 
 if __name__ == "__main__":
