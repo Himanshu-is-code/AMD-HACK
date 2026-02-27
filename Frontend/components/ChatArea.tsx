@@ -63,6 +63,8 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+    const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
 
     // Copilot State
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -144,7 +146,22 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
 
     useEffect(() => {
         scrollToBottom();
+        // Highlight the last message in the navigator
+        if (messages.length > 0) {
+            setActiveMessageId(messages[messages.length - 1].id);
+        }
     }, [messages, isLoading]);
+
+    const scrollToMessage = (id: string) => {
+        const el = messageRefs.current[id];
+        if (el) {
+            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            setActiveMessageId(id);
+        }
+    };
+
+    // Derive user messages for the navigator
+    const userMessages = messages.filter(m => m.role === Role.USER);
 
     const handleKeyDown = (e: React.KeyboardEvent) => {
         if (e.key === 'Enter' && !e.shiftKey) {
@@ -612,7 +629,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                 <div className={`flex-1 overflow-y-auto px-4 md:px-6 scroll-smooth z-0 pointer-events-auto ${isEmpty ? 'invisible' : 'visible'}`}>
                     <div className="max-w-3xl mx-auto space-y-6 pb-32 pt-4">
                         {messages.map((msg, index) => (
-                            <div key={msg.id} className={`flex gap-4 ${msg.role === Role.USER ? 'justify-end' : 'justify-start'}`}>
+                            <div key={msg.id} ref={el => { messageRefs.current[msg.id] = el; }} className={`flex gap-4 ${msg.role === Role.USER ? 'justify-end' : 'justify-start'}`}>
                                 <div className={`max-w-[85%] rounded-2xl px-5 py-3.5 leading-relaxed whitespace-pre-wrap shadow-sm ${msg.role === Role.USER ? 'bg-zinc-200 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100' : 'bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-zinc-800 text-zinc-800 dark:text-zinc-200'}`}>
                                     <ReactMarkdown
                                         remarkPlugins={[remarkGfm]}
@@ -709,6 +726,38 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                         <div ref={messagesEndRef} />
                     </div>
                 </div>
+
+                {/* Right-side Message Navigator */}
+                {!isEmpty && (
+                    <div className="absolute right-0 top-4 bottom-36 z-10 flex flex-col justify-end pointer-events-auto group/nav">
+                        <div className="w-5 group-hover/nav:w-52 overflow-hidden transition-all duration-300 ease-in-out flex flex-col gap-1 py-3">
+                            {userMessages.map((msg) => {
+                                const isActive = msg.id === activeMessageId;
+                                return (
+                                    <button
+                                        key={msg.id}
+                                        onClick={() => scrollToMessage(msg.id)}
+                                        className="flex items-center justify-end gap-2 w-full pr-2 py-0.5 group/item"
+                                    >
+                                        {/* Text label — clipped when narrow, revealed when container expands */}
+                                        <span
+                                            className={`text-xs font-medium whitespace-nowrap transition-opacity duration-300 opacity-0 group-hover/nav:opacity-100 ${isActive ? 'text-blue-400' : 'text-zinc-400 group-hover/item:text-zinc-200'}`}
+                                        >
+                                            {msg.content.length > 28 ? msg.content.slice(0, 28) + '...' : msg.content}
+                                        </span>
+                                        {/* Dash indicator */}
+                                        <span
+                                            className={`flex-shrink-0 block rounded-full transition-all duration-200 h-0.5 ${isActive
+                                                ? 'bg-blue-400 w-4'
+                                                : 'bg-zinc-600 group-hover/item:bg-zinc-400 w-3'
+                                                }`}
+                                        />
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
 
                 {/* Outer input positioner: always bottom:32px, slides via translateY */}
                 <div className="absolute z-20 pointer-events-auto group/input" style={inputBarStyle}>
