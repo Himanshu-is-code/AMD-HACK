@@ -1,0 +1,75 @@
+﻿=== ALL CONFERENCE RECORDS ===
+Found 4 record(s)
+
+{
+  "name": "conferenceRecords/LhZ098DldeOw6rt4YpUBDxIUOAIIigIgABgECA",
+  "startTime": "2026-02-26T10:33:29.718770Z",
+  "endTime": "2026-02-26T10:40:30.499312Z",
+  "expireTime": "2026-03-28T10:40:30.499312Z",
+  "space": "spaces/6LDnQ1ofSTwB"
+}
+{
+  "name": "conferenceRecords/xR6L0A2Rw-haP1yddWKFDxIUOAIIigIgABgECA",
+  "startTime": "2026-02-26T10:32:40.033946Z",
+  "endTime": "2026-02-26T10:33:03.456805Z",
+  "expireTime": "2026-03-28T10:33:03.456805Z",
+  "space": "spaces/6LDnQ1ofSTwB"
+}
+{
+  "name": "conferenceRecords/GmZHzhYfIkx4AIuuhKGTDxIUOAIIigIgABgECA",
+  "startTime": "2026-02-26T10:28:35.443117Z",
+  "endTime": "2026-02-26T10:30:29.780993Z",
+  "expireTime": "2026-03-28T10:30:29.780993Z",
+  "space": "spaces/6LDnQ1ofSTwB"
+}
+{
+  "name": "conferenceRecords/Cr3TEpQ7EvjWk5fiokcNDxIPOAIIigIgABgECA",
+  "startTime": "2026-02-03T09:45:02.940001Z",
+  "endTime": "2026-02-03T10:05:24.444265Z",
+  "expireTime": "2026-03-05T10:05:24.444265Z",
+  "space": "spaces/7u7BpGAi3TkB"
+}
+
+=== TRANSCRIPTS for conferenceRecords/LhZ098DldeOw6rt4YpUBDxIUOAIIigIgABgECA ===
+Found 0 transcript(s)
+
+No transcripts yet. Make sure you enabled transcription DURING the meeting.
+python : Traceback (most 
+recent call last):
+At line:1 char:1
++ python debug_meet.py 2>&1 | 
+Out-File debug_meet_output.txt 
+-Encoding  ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          :  
+   NotSpecified: (Traceback (  
+  most recent call last)::St   
+ ring) [], RemoteException
+    + FullyQualifiedErrorId :  
+   NativeCommandError
+ 
+  File "D:\my things\desk\AMD H
+ack\agent-backend\debug_meet.py
+", line 38, in <module>
+    print("Inside Google Meet: 
+Activities (\u2728) \u2192 
+Transcripts \u2192 Start 
+transcription")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Window
+sApps\PythonSoftwareFoundation.
+Python.3.13_3.13.3312.0_x64__qb
+z5n2kfra8p0\Lib\encodings\cp125
+2.py", line 19, in encode
+    return codecs.charmap_encod
+e(input,self.errors,encoding_ta
+ble)[0]
+           ~~~~~~~~~~~~~~~~~~~~
+~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^
+UnicodeEncodeError: 'charmap' 
+codec can't encode character 
+'\u2728' in position 32: 
+character maps to <undefined>

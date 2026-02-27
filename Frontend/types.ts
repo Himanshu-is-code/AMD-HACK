@@ -10,6 +10,9 @@ export interface Message {
   timestamp: number;
   latency?: number;
   sources?: { title: string, url: string }[];
+  inlineData?: { data: string, mimeType: string };
+  fileName?: string;
+  webSearch?: boolean;
 }
 
 export interface ChatSession {

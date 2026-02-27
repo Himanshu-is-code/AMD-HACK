@@ -122,10 +122,27 @@ const App: React.FC = () => {
     };
     setChats(prev => [newChat, ...prev]);
     setCurrentChatId(newChat.id);
-    // On mobile, maybe close sidebar? Keeping open for now.
   };
 
-  const handleSendMessage = async (content: string) => {
+  // Helper function to read file as Base64
+  const readFileAsBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === 'string') {
+          // Remove the Data URL prefix (e.g., "data:application/pdf;base64,")
+          const base64Data = reader.result.split(',')[1];
+          resolve(base64Data);
+        } else {
+          reject(new Error("Failed to read file as string"));
+        }
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleSendMessage = async (content: string, file?: File | null, isWebSearch?: boolean) => {
     let chatId = currentChatId;
     let currentHistory: Message[] = [];
 
@@ -151,16 +168,16 @@ const App: React.FC = () => {
       id: Date.now().toString(),
       role: Role.USER,
       content,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      fileName: file?.name
     };
 
     setChats(prev => prev.map(chat => {
       if (chat.id === chatId) {
-        // Auto-rename if it's the first message and title is "New Chat"
         const shouldRename = chat.messages.length === 0 && chat.title === 'New Chat';
         return {
           ...chat,
-          title: shouldRename ? content.slice(0, 30) + (content.length > 30 ? '...' : '') : chat.title,
+          title: shouldRename ? (content || (file ? `File: ${file.name}` : 'New Chat')).slice(0, 30) + '...' : chat.title,
           messages: [...chat.messages, userMsg],
           updatedAt: Date.now()
         };
@@ -172,37 +189,108 @@ const App: React.FC = () => {
     const startTime = Date.now();
 
     try {
-      // const responseText = await sendMessageToGemini([...currentHistory, userMsg], content);
-      const agentResponse = await sendToAgent(content);
+      // Direct Gemini integration for Search and File Upload tasks
+      if (file || isWebSearch) {
+        const { GoogleGenAI } = await import("@google/genai");
+        const apiKey = process.env.API_KEY || import.meta.env.VITE_GEMINI_API_KEY;
+        const ai = new GoogleGenAI({ apiKey });
 
-      // Handle Task Creation
-      if (agentResponse.id) {
-        setActiveTaskId(agentResponse.id);
-        setActiveTaskStatus(agentResponse.status);
-      }
-
-      const responseText = agentResponse.plan || JSON.stringify(agentResponse);
-      const endTime = Date.now();
-      const duration = endTime - startTime;
-
-      const modelMsg: Message = {
-        id: (Date.now() + 1).toString(),
-        role: Role.MODEL,
-        content: responseText,
-        timestamp: Date.now(),
-        latency: duration
-      };
-
-      setChats(prev => prev.map(chat => {
-        if (chat.id === chatId) {
-          return {
-            ...chat,
-            messages: [...chat.messages, modelMsg],
-            updatedAt: Date.now()
-          };
+        let promptText = content || "Please review the attached file.";
+        if (isWebSearch && file) {
+          promptText += "\n\n[SYSTEM INSTRUCTION]: The user has enabled Web Search. You MUST use the Google Search tool to find external sources, verify information, and add citations relevant to the attached document.";
+        } else if (isWebSearch) {
+          promptText += "\n\n[SYSTEM INSTRUCTION]: You MUST use the Google Search tool to answer this query and cite your sources.";
         }
-        return chat;
-      }));
+
+        let requestContents: any[] = [promptText];
+
+        let inlineDataObj: { data: string, mimeType: string } | undefined = undefined;
+
+        if (file) {
+          const base64Data = await readFileAsBase64(file);
+          inlineDataObj = {
+            data: base64Data,
+            mimeType: file.type || 'application/octet-stream' // fallback
+          };
+          requestContents.unshift({
+            inlineData: inlineDataObj
+          });
+        }
+
+        const config: any = {};
+        if (isWebSearch) {
+          config.tools = [{ googleSearch: {} }];
+        }
+
+        const result = await ai.models.generateContent({
+          model: "gemini-2.5-flash",
+          contents: requestContents,
+          config
+        });
+
+        const responseText = result.text || "";
+        const groundingMetadata = result.candidates?.[0]?.groundingMetadata;
+        const sources: { title: string, url: string }[] = [];
+
+        if (groundingMetadata?.groundingChunks) {
+          for (const chunk of groundingMetadata.groundingChunks as any[]) {
+            if (chunk.web) {
+              sources.push({ title: chunk.web?.title || "", url: chunk.web?.uri || "" });
+            }
+          }
+        }
+
+        const duration = Date.now() - startTime;
+        const modelMsg: Message = {
+          id: (Date.now() + 1).toString(),
+          role: Role.MODEL,
+          content: responseText,
+          timestamp: Date.now(),
+          latency: duration,
+          sources: sources.length > 0 ? sources : undefined
+        };
+
+        setChats(prev => prev.map(chat => {
+          if (chat.id === chatId) {
+            return {
+              ...chat,
+              messages: [...chat.messages, modelMsg],
+              updatedAt: Date.now()
+            };
+          }
+          return chat;
+        }));
+      } else {
+        // Normal Agent Backend Router flow
+        const agentResponse = await sendToAgent(content);
+
+        if (agentResponse.id) {
+          setActiveTaskId(agentResponse.id);
+          setActiveTaskStatus(agentResponse.status);
+        }
+
+        const responseText = agentResponse.plan || JSON.stringify(agentResponse);
+        const duration = Date.now() - startTime;
+
+        const modelMsg: Message = {
+          id: (Date.now() + 1).toString(),
+          role: Role.MODEL,
+          content: responseText,
+          timestamp: Date.now(),
+          latency: duration
+        };
+
+        setChats(prev => prev.map(chat => {
+          if (chat.id === chatId) {
+            return {
+              ...chat,
+              messages: [...chat.messages, modelMsg],
+              updatedAt: Date.now()
+            };
+          }
+          return chat;
+        }));
+      }
     } catch (err: any) {
       console.error(err);
       const endTime = Date.now();

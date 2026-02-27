@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { handleGoogleLogin } from '../utils/auth';
 import { getAuthStatus, logoutGoogle, getGoogleUser } from '../services/agentService';
-import { Paperclip, PanelLeft, Bot, ListTodo, Settings, UserCircle, Plus, Search, LayoutGrid, Clock, MinusCircle, Calendar, HardDrive, Mail, StickyNote, TrendingUp, Move, Lock, Unlock, Eye, EyeOff, GripVertical } from 'lucide-react';
+import { Paperclip, PanelLeft, Bot, ListTodo, Settings, UserCircle, Plus, Search, LayoutGrid, Clock, MinusCircle, Calendar, HardDrive, Mail, StickyNote, TrendingUp, Move, Lock, Unlock, Eye, EyeOff, GripVertical, Globe, File, X } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Message, Role } from '../types';
@@ -15,7 +15,7 @@ import { DraggableWidgetWrapper } from './DraggableWidgetWrapper';
 
 interface ChatAreaProps {
     messages: Message[];
-    onSendMessage: (content: string) => void;
+    onSendMessage: (content: string, file?: File | null, isWebSearch?: boolean) => void;
     isSidebarOpen: boolean;
     toggleSidebar: () => void;
     isLoading: boolean;
@@ -62,6 +62,11 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const textareaRef = useRef<HTMLTextAreaElement>(null);
     const chatContainerRef = useRef<HTMLDivElement>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // Copilot State
+    const [selectedFile, setSelectedFile] = useState<File | null>(null);
+    const [isWebSearch, setIsWebSearch] = useState(false);
 
     // Widget State
     const [widgets, setWidgets] = useState<WidgetInstance[]>([]);
@@ -131,7 +136,7 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     }, []);
 
     const isEmpty = messages.length === 0;
-    const isExpanded = isFocused || inputValue.trim().length > 0;
+    const isExpanded = isFocused || inputValue.trim().length > 0 || selectedFile !== null;
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -149,14 +154,24 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
     };
 
     const handleSend = () => {
-        if (inputValue.trim() && !isLoading) {
-            onSendMessage(inputValue);
+        if ((inputValue.trim() || selectedFile) && !isLoading) {
+            onSendMessage(inputValue, selectedFile, isWebSearch);
             setInputValue('');
+            setSelectedFile(null);
+            // Optionally leave web search toggled based on preference, resetting it for now
+            // setIsWebSearch(false);
             setIsFocused(false);
             if (textareaRef.current) {
                 textareaRef.current.blur();
                 textareaRef.current.style.height = 'auto';
             }
+        }
+    };
+
+    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        if (e.target.files && e.target.files.length > 0) {
+            setSelectedFile(e.target.files[0]);
+            setIsFocused(true); // Keep UI expanded
         }
     };
 
@@ -715,11 +730,43 @@ export const ChatArea: React.FC<ChatAreaProps> = ({
                                 <span className="text-sm font-medium">Ask Anything</span>
                             </div>
                             <div className={`flex flex-col ${isExpanded ? 'opacity-100' : 'opacity-0 invisible absolute inset-0'}`}>
-                                <textarea ref={textareaRef} value={inputValue} onChange={(e) => setInputValue(e.target.value)} onKeyDown={handleKeyDown} onFocus={() => setIsFocused(true)} onBlur={() => { if (!inputValue.trim()) setIsFocused(false); }} placeholder="Ask Anything" rows={1} className="w-full bg-transparent border-none focus:ring-0 p-1 text-base text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 resize-none min-h-[48px] max-h-48" style={{ height: 'auto' }} />
+                                {/* Optional: Show selected file indicator */}
+                                {selectedFile && (
+                                    <div className="flex items-center gap-2 mb-2 px-2 py-1 bg-zinc-100 dark:bg-zinc-800/50 rounded-md border border-zinc-200 dark:border-zinc-700 w-max max-w-[80%]">
+                                        <File className="w-3.5 h-3.5 text-blue-500 flex-shrink-0" />
+                                        <span className="text-xs text-zinc-700 dark:text-zinc-300 truncate font-medium">{selectedFile.name}</span>
+                                        <button onClick={() => setSelectedFile(null)} className="ml-1 text-zinc-400 hover:text-red-500 transition-colors">
+                                            <X className="w-3.5 h-3.5" />
+                                        </button>
+                                    </div>
+                                )}
+                                <textarea ref={textareaRef} value={inputValue} onChange={(e) => setInputValue(e.target.value)} onKeyDown={handleKeyDown} onFocus={() => setIsFocused(true)} onBlur={() => { if (!inputValue.trim() && !selectedFile) setIsFocused(false); }} placeholder="Ask Anything" rows={1} className="w-full bg-transparent border-none focus:ring-0 p-1 text-base text-zinc-800 dark:text-zinc-200 placeholder-zinc-400 resize-none min-h-[48px] max-h-48" style={{ height: 'auto' }} />
                                 <div className="flex justify-between items-center mt-2">
-                                    <button className="p-2 text-zinc-400 hover:text-zinc-600 rounded-full hover:bg-zinc-100 dark:hover:bg-zinc-800 transition-colors"><Paperclip className="w-5 h-5" /></button>
-                                    <button onClick={handleSend} disabled={!inputValue.trim() || isLoading} className={`flex items-center gap-2 px-4 py-2 rounded-full font-semibold text-sm transition-all ${inputValue.trim() && !isLoading ? 'bg-blue-600 text-white hover:bg-blue-700' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-600'}`}>
-                                        {isLoading ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <><Plus className="w-4 h-4" /><span>Send</span></>}
+                                    <div className="flex items-center gap-1">
+                                        <input
+                                            type="file"
+                                            ref={fileInputRef}
+                                            onChange={handleFileChange}
+                                            className="hidden"
+                                            accept=".pdf,.doc,.docx,.txt"
+                                        />
+                                        <button
+                                            onClick={() => fileInputRef.current?.click()}
+                                            className={`p-2 rounded-full transition-colors ${selectedFile ? 'text-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
+                                            title="Attach File"
+                                        >
+                                            <Paperclip className="w-5 h-5" />
+                                        </button>
+                                        <button
+                                            onClick={() => setIsWebSearch(!isWebSearch)}
+                                            className={`p-2 rounded-full transition-colors ${isWebSearch ? 'text-blue-500 bg-blue-50 dark:bg-blue-900/20' : 'text-zinc-400 hover:text-zinc-600 hover:bg-zinc-100 dark:hover:bg-zinc-800'}`}
+                                            title="Search Web"
+                                        >
+                                            <Globe className="w-5 h-5" />
+                                        </button>
+                                    </div>
+                                    <button onClick={handleSend} disabled={(!inputValue.trim() && !selectedFile) || isLoading} className={`flex items-center gap-2 px-4 py-2 rounded-full font-semibold text-sm transition-all ${(inputValue.trim() || selectedFile) && !isLoading ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-sm' : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-400 dark:text-zinc-600'}`}>
+                                        {isLoading ? <div className="w-4 h-4 border-2 border-white/50 border-t-white rounded-full animate-spin" /> : <><Plus className="w-4 h-4" /><span>Send</span></>}
                                     </button>
                                 </div>
                             </div>

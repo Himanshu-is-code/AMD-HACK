@@ -12,6 +12,7 @@ import uuid
 import settings_service
 import calendar_service
 import gmail_service
+import meet_service
 from datetime import datetime  # Added missing import
 import logging
 
@@ -31,8 +32,9 @@ class SettingUpdate(BaseModel):
 
 app = FastAPI()
 
-# Allow relaxing scope for dev (fixes "Scope has changed" error)
 import os
+# Allows auth to succeed even if Google grants fewer scopes than requested.
+# Needed until Meet scopes are added to the GCP OAuth consent screen Data Access section.
 os.environ['OAUTHLIB_RELAX_TOKEN_SCOPE'] = '1'
 
 app.add_middleware(
@@ -51,8 +53,10 @@ import google.generativeai as genai
 from fastapi.encoders import jsonable_encoder
 
 # Configuration
-FAST_MODEL = "llama3.2"
-SMART_MODEL = "llama3.2" 
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama") # or "openai-compatible" for vLLM
+FAST_MODEL = os.getenv("FAST_MODEL", "llama3.2")
+SMART_MODEL = os.getenv("SMART_MODEL", "llama3.2") 
 TASKS_FILE = "tasks.json"
 
 class Task(BaseModel):
@@ -104,11 +108,6 @@ def save_task(task: dict):
             json.dump(tasks, f, indent=2)
 
 def update_task_status(task_id: str, status: str, plan_update: str = None):
-    # This function combines load/save, so we need the lock to generate the full sequence
-    # However, save_task already takes lock. To avoid deadlock (if we used recursive lock) or complexity,
-    # let's just implement the logic here directly or ensure save_task logic is safe.
-    # Actually, best to just use the lock here and call a helper that doesn't lock? 
-    # Or simply:
     with file_lock:
         if not os.path.exists(TASKS_FILE):
             return
@@ -130,42 +129,64 @@ def update_task_status(task_id: str, status: str, plan_update: str = None):
                     json.dump(tasks, f, indent=2)
                 break
 
-def call_ollama(prompt: str, model: str = FAST_MODEL, json_mode: bool = False):
+def call_llm(prompt: str, model: str = FAST_MODEL, json_mode: bool = False):
+    """
+    Hardware-agnostic LLM call. Supports Ollama and vLLM (OpenAI-compatible).
+    AMD Instinct GPUs often use vLLM, while local laptops use Ollama.
+    """
     try:
-        logging.info(f"Calling Ollama with model: {model}")
-        print(f"Calling Ollama with model: {model}, json_mode: {json_mode}")
+        logging.info(f"Calling LLM ({LLM_PROVIDER}) with model: {model}")
         
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "stream": False,
-        }
-        if json_mode:
-            payload["format"] = "json"
-        
-        res = requests.post(
-            "http://localhost:11434/api/generate",
-            json=payload,
-            timeout=300  
-        )
-        logging.info(f"Ollama Status: {res.status_code}")
-        
+        if LLM_PROVIDER == "ollama":
+            payload = {
+                "model": model,
+                "prompt": prompt,
+                "stream": False,
+            }
+            if json_mode:
+                payload["format"] = "json"
+            
+            res = requests.post(
+                f"{LLM_BASE_URL}/api/generate",
+                json=payload,
+                timeout=300  
+            )
+        else:
+            # OpenAI / vLLM compatible check
+            payload = {
+                "model": model,
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False,
+            }
+            if json_mode:
+                payload["response_format"] = {"type": "json_object"}
+            
+            res = requests.post(
+                f"{LLM_BASE_URL}/v1/chat/completions",
+                json=payload,
+                timeout=300
+            )
+
         if not res.ok:
-            logging.error(f"Ollama Error: {res.text}")
-            return f"Error connecting to Ollama: Status {res.status_code}, Response: {res.text}"
+            logging.error(f"LLM Error: {res.text}")
+            return f"Error connecting to LLM: Status {res.status_code}, Response: {res.text}"
         
-        try:
-            data = res.json()
-            response_text = data.get("response", "Error: No response key in Ollama output")
-            logging.info("Ollama Response received")
-            return response_text
-        except json.JSONDecodeError:
-            logging.error("Failed to parse Ollama response")
-            return "Error: Failed to parse Ollama response"
+        data = res.json()
+        if LLM_PROVIDER == "ollama":
+            response_text = data.get("response", "")
+        else:
+            response_text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            
+        logging.info("LLM Response received")
+        return response_text
             
     except Exception as e:
-        logging.error(f"Ollama Exception: {str(e)}")
-        return f"Error: Unexpected error calling Ollama: {str(e)}"
+        logging.error(f"LLM Exception: {str(e)}")
+        return f"Error: Unexpected error calling LLM: {str(e)}"
+
+# Alias call_ollama for backward compatibility during refactor
+def call_ollama(prompt: str, model: str = FAST_MODEL, json_mode: bool = False):
+    return call_llm(prompt, model, json_mode)
 
 
 # Search service removed
@@ -329,9 +350,14 @@ def check_internet():
     except OSError:
         return False
 
+from agent_orchestrator import AgentOrchestrator
+
+# Initialize ADK Orchestrator
+orchestrator = AgentOrchestrator(llm_caller=call_llm)
+
 def execute_task_logic(task_id: str, task_text: str, client_time: str = None, requires_internet: bool = True, extracted_time: str = None):
     """
-    Executes the actual task logic (Calendar API, etc.).
+    Executes the actual task logic via the AgentOrchestrator.
     Returns True if completed, False if paused due to network/error.
     """
     try:
@@ -343,215 +369,15 @@ def execute_task_logic(task_id: str, task_text: str, client_time: str = None, re
 
         update_task_status(task_id, "executing")
         
-        # --- REAL ACTION EXECUTION ---
-        result_update = ""
-        triggers = ["calendar", "calender", "meeting", "appointment", "event", "remind", "mark"]
-        if any(valid_trigger in task_text.lower() for valid_trigger in triggers):
-            logging.info(f"Executing Calendar Action for task {task_id}")
-            
-            # 1. Extract Details
-            # Pass extracted_time to override LLM date logic
-            details = extract_event_details(task_text, client_time_str=client_time, extracted_time_override=extracted_time)
-            logging.info(f"Extracted details: {details}")
-            
-            if details:
-                # 2. Create Event
-                # Calendar creation definitely needs internet
-                # We do a Just-In-Time check here even if requires_internet was False (though logically it should be True for calendar)
-                
-                # If the task originally claimed it didn't need internet but now we know it does (calendar), we check again.
-                if not check_internet(): 
-                     logging.warning(f"Task {task_id}: Needs internet for Calendar API. Re-queueing.")
-                     # Make sure to update the task to require internet for next time
-                     tasks = load_tasks()
-                     idx = next((i for i, t in enumerate(tasks) if t["id"] == task_id), None)
-                     if idx is not None:
-                         tasks[idx]["requires_internet"] = True
-                         tasks[idx]["status"] = "waiting_for_internet"
-                         save_task(tasks[idx])
-                     else:
-                        update_task_status(task_id, "waiting_for_internet")
-                     return False
-
-                cal_result = calendar_service.create_event(
-                    summary=details.get("summary", "New Event"),
-                    start_time_iso=details.get("start_time"),
-                    duration_minutes=details.get("duration_minutes", 30)
-                )
-                
-                # Check for network-related errors in the result
-                error_msg = str(cal_result.get("error", "")).lower()
-                network_keywords = [
-                    "network", "socket", "connection", "timeout", 
-                    "unable to find the server", "getaddrinfo", "client_connector_error", 
-                    "server disconnected"
-                ]
-                
-                if "error" in cal_result and any(k in error_msg for k in network_keywords):
-                        logging.warning(f"Task {task_id}: Network error ({cal_result['error']}). Re-queueing.")
-                        update_task_status(task_id, "waiting_for_internet")
-                        return False # Exit, do not complete
-                
-                # Success or non-retriable error
-                logging.info(f"Calendar Result: {cal_result}")
-                
-                if "link" in cal_result:
-                        result_update = f"\n\n✅ Event Created: **{details.get('summary')}**\n[View on Google Calendar]({cal_result['link']})"
-                else:
-                        result_update = f"\n\n❌ Event Creation Failed: {cal_result.get('error')}"
-            else:
-                result_update = "\n\n❌ Could not understand event details."
-                
-        # -----------------------------
+        # --- EXECUTION VIA ADK ORCHESTRATOR ---
+        context = {
+            "client_time": client_time,
+            "extracted_time": extracted_time
+        }
         
-        # --- GMAIL ACTION LOGIC ---
-        t = task_text.lower()
-        logging.info(f"Evaluating Gmail Triggers for: '{t}'")
+        result_update = orchestrator.plan_and_execute(task_id, task_text, context)
         
-        # Flags for trigger evaluation
-        is_summary_req = any(kw in t for kw in ["unread", "inbox", "summary", "summarize"])
-        is_search_req = any(kw in t for kw in ["from", "about", "for", "regarding", "subject", "read", "latest", "find", "check", "tell me more", "timing", "when"])
-        has_email_kw = "email" in t or "gmail" in t or "session" in t
-        
-        logging.info(f"Gmail Triggers: summary={is_summary_req}, search={is_search_req}, has_email={has_email_kw}")
-
-        if has_email_kw or is_search_req:
-            if not check_internet():
-                logging.warning(f"Task {task_id}: Needs internet for Gmail. Re-queueing.")
-                update_task_status(task_id, "waiting_for_internet")
-                return False
-
-            # Use LLM to decide if this is a SPECIFIC search or a GENERAL summary
-            decision_prompt = f"""
-            [INST]
-            Analyze this request: "{task_text}"
-            
-            Does the user want:
-            1. A general summary of their recent/unread emails? (GENERAL)
-            2. To find or read a specific email about a person, topic, or event? (SPECIFIC)
-            
-            Rules:
-            - "summarize my emails", "what is my email summary", "check inbox", "any new emails?" -> GENERAL
-            - "check email from Bob", "summary of the meeting email", "read the latest email" -> SPECIFIC
-            
-            Answer "SPECIFIC" or "GENERAL" only.
-            [/INST]
-            """
-            decision = call_ollama(decision_prompt, model=FAST_MODEL).strip().upper()
-            logging.info(f"Gmail Action Decision: {decision}")
-
-            # 1. SPECIFIC SEARCH
-            # We trigger specific search if decision is SPECIFIC OR if clear search keywords are present
-            # BUT we guard against generic "summary" requests slipping in here
-            should_run_specific = "SPECIFIC" in decision or (is_search_req and not is_summary_req)
-            
-            if should_run_specific:
-                logging.info(f"Executing Gmail Specific Check for task {task_id}")
-                
-                search_prompt = f"""
-                [INST]
-                You are a Gmail Search Query Generator.
-                User Request: "{task_text}"
-                
-                Task: Generate a simple Gmail search query string.
-                
-                Rules:
-                1. Return ONLY the search query. No preamble.
-                2. Focus on the core entity or event.
-                3. Use keywords that would appear in the Subject or Sender.
-                4. REMOVE commands like "tell me", "check", "email", "summary", "summarize".
-                
-                Response:
-                [/INST]
-                """
-                raw_query = call_ollama(search_prompt, model=FAST_MODEL).strip()
-                search_query = raw_query.split('\n')[-1].replace('"', '').replace("'", "").replace(",", " ")
-                if ":" in search_query and len(search_query.split(":")[0].split()) > 1:
-                    search_query = search_query.split(":")[-1].strip()
-                
-                if search_query.count("from:") > 1:
-                    search_query = search_query.replace("from:", "")
-                
-                # GUARD: If query is too generic, abort specific search
-                clean_q = search_query.lower().strip()
-                if clean_q in ["", "summary", "email", "gmail", "inbox", "emails", "my email", "my emails"]:
-                    logging.info(f"Generated query '{search_query}' is too generic. Switching to GENERAL.")
-                    should_run_specific = False # Fall through to general
-                    decision = "GENERAL"
-                else:
-                    logging.info(f"Primary search query: '{search_query}'")
-                    emails = gmail_service.search_emails(search_query, limit=5)
-                    
-                    if not emails:
-                        logging.info(f"No results for primary. Trying softer fallback...")
-                        # Try just the first 3 words of the query, but remove trailing operators
-                        params = search_query.split()
-                        fallback_words = params[:3]
-                        
-                        # Clean trailing operator keywords if present
-                        if fallback_words and fallback_words[-1].lower() in ["from", "about", "subject", "for"]:
-                            fallback_words.pop()
-                        
-                        softer_query = " ".join(fallback_words)
-                        logging.info(f"Fallback query: '{softer_query}'")
-                        emails = gmail_service.search_emails(softer_query, limit=5)
-
-                    if emails:
-                        read_intent = any(kw in t for kw in ["read", "latest", "content", "what is", "timing", "session", "when", "tell me", "summary", "summarize"])
-                        if len(emails) == 1 or read_intent:
-                            email_id = emails[0]['id']
-                            logging.info(f"Fetching content for email ID: {email_id}")
-                            content = gmail_service.get_email_content(email_id)
-                            
-                            if content:
-                                cleaned_body = clean_email_body(content['body'])
-                                read_prompt = f"""
-                                [INST]
-                                The user asked: "{task_text}"
-                                Email Content:
-                                From: {content['sender']}
-                                Subject: {content['subject']}
-                                Body: {cleaned_body[:3500]}
-                                
-                                Summarize the core details (especially timing/links) as requested.
-                                [/INST]
-                                """
-                                email_response = call_ollama(read_prompt, model=SMART_MODEL)
-                                email_link = f"https://mail.google.com/mail/u/0/#inbox/{email_id}"
-                                result_update += f"\n\n📧 **Email Found**\n**From:** {content['sender']}\n**Subject:** {content['subject']}\n\n{email_response}\n\n[Open in Gmail]({email_link})"
-                            else:
-                                result_update += "\n\n❌ Could not retrieve email content."
-                        else:
-                            email_list = "\n".join([f"- **{e['subject']}** from {e['sender']}" for e in emails])
-                            result_update += f"\n\n🔍 **Search Results for '{search_query}':**\n{email_list}\n\n*Tip: Ask me to 'read the one about...'*"
-                    elif "SPECIFIC" in decision:
-                        # Only show "No results" if we are committed to SPECIFIC
-                        # If we have a fallback to GENERAL available (e.g. user said "summary of X"), 
-                        # we might want to let it fall through? 
-                        # But for now, if they asked for X and we didn't find X, saying "No emails found for X" is correct.
-                        result_update += f"\n\n🔍 No emails found for: `{search_query}`"
-
-            # 2. GENERAL SUMMARY (Only if SPECIFIC didn't finish the job OR if explicitly GENERAL)
-            # We check if result_update is empty OR if decision is GENERAL
-            if "GENERAL" in decision or (is_summary_req and not result_update):
-                logging.info(f"Executing Gmail Summary Action for task {task_id}")
-                emails = gmail_service.fetch_recent_unread_emails(limit=10)
-                
-                if emails is None:
-                    result_update += "\n\n⚠️ **Gmail Access Required**"
-                elif not emails:
-                    result_update += "\n\n✅ You have no new unread emails."
-                else:
-                    logging.info(f"Fetched {len(emails)} emails for summary.")
-                    email_text = ""
-                    for i, email in enumerate(emails):
-                        email_text += f"Email {i+1}: From: {email['sender']} Subject: {email['subject']} Snippet: {email['snippet']}\n\n"
-                    
-                    summary_prompt = f"[INST] Summarize these unread emails briefly:\n{email_text}\n[/INST]"
-                    summary = call_ollama(summary_prompt, model=SMART_MODEL)
-                    result_update += f"\n\n📧 **Inbox Summary**\n{summary}"
-
-        # -----------------------------
+        # ---------------------------------------
 
         # Update the task with the result
         tasks = load_tasks()
@@ -565,8 +391,8 @@ def execute_task_logic(task_id: str, task_text: str, client_time: str = None, re
 
     except Exception as e:
         logging.error(f"Critical error executing task {task_id}: {e}")
-        # Optionally set to 'error' state, but for now just leave it or set complete with error
         return False
+
 
 def background_task_simulation(task_id: str, requires_internet: bool, task_text: str, client_time: str = None, extracted_time: str = None):
     """Initial entry point for new tasks."""
@@ -790,6 +616,92 @@ def get_task(task_id: str):
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
+
+# ---------------------------------------------------------------------------
+# Google Meet endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/meet/spaces")
+def create_meet_space():
+    """Creates a new instant Google Meet space."""
+    result = meet_service.create_meeting_space()
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get("/meet/conferences")
+def list_meet_conferences(space_name: str = None):
+    """
+    Lists all conference records (completed meetings).
+    Optional query param: ?space_name=spaces%2Fabc-xyz to filter by space.
+    Use this to get a conferenceRecord name before fetching transcripts.
+    """
+    result = meet_service.list_conference_records(space_name)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get("/meet/spaces/{space_name:path}")
+def get_meet_space(space_name: str):
+    """
+    Gets a meeting space by resource name.
+    Example: GET /meet/spaces/spaces%2Fabc-xyz-def
+    """
+    result = meet_service.get_meeting_space(space_name)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get("/meet/conferences/{conference_record_name:path}/participants")
+def get_meet_participants(conference_record_name: str):
+    """
+    Lists all participants in a conference record.
+    Example: GET /meet/conferences/conferenceRecords%2Fabc123/participants
+    """
+    result = meet_service.list_participants(conference_record_name)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get("/meet/participants/{participant_name:path}/sessions")
+def get_participant_sessions(participant_name: str):
+    """
+    Lists all sessions for a single participant.
+    Example: GET /meet/participants/conferenceRecords%2Fabc123%2Fparticipants%2Fdef456/sessions
+    """
+    result = meet_service.list_participant_sessions(participant_name)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get("/meet/conferences/{conference_record_name:path}/transcripts")
+def get_meet_transcripts(conference_record_name: str):
+    """
+    Gets all transcripts for a conference record.
+    Example: GET /meet/conferences/conferenceRecords%2Fabc123/transcripts
+    """
+    result = meet_service.get_transcripts(conference_record_name)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get("/meet/transcripts/{transcript_name:path}/entries")
+def get_meet_transcript_entries(transcript_name: str):
+    """
+    Gets all transcript entries (utterances) for a transcript.
+    Example: GET /meet/transcripts/conferenceRecords%2Fabc123%2Ftranscripts%2Fghi789/entries
+    """
+    result = meet_service.get_transcript_entries(transcript_name)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
 
 if __name__ == "__main__":
     import uvicorn

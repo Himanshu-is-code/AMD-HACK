@@ -13,7 +13,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/calendar.readonly",
     "https://www.googleapis.com/auth/calendar.events",
-    "https://www.googleapis.com/auth/gmail.readonly"
+    "https://www.googleapis.com/auth/gmail.readonly",
+    # Google Meet — create/manage spaces you own
+    "https://www.googleapis.com/auth/meetings.space.created",
+    # Google Meet — read-only access for participants & transcripts
+    "https://www.googleapis.com/auth/meetings.space.readonly",
 ]
 REDIRECT_URI = "http://localhost:5173" # Must match frontend URL
 
