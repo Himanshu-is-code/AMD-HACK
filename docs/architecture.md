@@ -51,7 +51,7 @@ The backend acts as a secure intermediary for local AI operations and Google Wor
     - `classroom_service.py`: **[NEW]** Interaction layer for Google Classroom API.
 - **Local AI Integration**:
     - Integrates with **Ollama** or **vLLM** via a hardware-agnostic LLM abstraction.
-    - Supports **AMD Instinct GPUs**, **NVIDIA CUDA**, and **Intel (CPU/GPU)**.
+    - Supports **AMD Ryzen™ AI (NPU)**, **AMD Instinct GPUs (ROCm)**, **NVIDIA CUDA**, and **Intel (OpenVINO)**.
     - Default model: `llama3.2` (optimized for local performance).
 - **Task Management**:
     - Implements an asynchronous task queue with persistence in `tasks.json`.
@@ -81,10 +81,10 @@ Flowstate uses a "Hybrid, Cross-Platform AI" approach:
 
 | Layer | Technology |
 | :--- | :--- |
-| **Frontend** | React 19, Vite, TypeScript, Tailwind CSS |
-| **Backend** | Python 3.x, FastAPI, Agent Orchestrator (Google ADK) |
-| **AI (Hardware)** | **AMD ROCm**, **NVIDIA CUDA**, **Intel (CPU/OpenVINO)** |
-| **AI (Serving)** | **Ollama**, **vLLM** (OpenAI-compatible) |
-| **AI (Models)** | Llama 3.2 (Local), Gemini 2.0 Flash (Cloud Research) |
-| **APIs** | Google Calendar API, Gmail API, Google Drive API, Google Classroom API |
-| **Tools** | chrono-node (Date Parsing), react-markdown |
+| **Frontend** | React 19, Vite, TypeScript, Lucide React,Three.js, Tailwind CSS |
+| **Backend** | Python 3.12+, FastAPI, Agent Orchestrator (Google ADK) |
+| **AI (Hardware)** | **AMD Ryzen™ AI (NPU)**, **AMD ROCm**, **NVIDIA CUDA**, **Intel (OpenVINO)** |
+| **AI (Serving)** | **Ollama**, **vLLM**, **ONNX Runtime** (Vitis™ AI) |
+| **AI (Models)** | Llama 3.2 (Local), Gemini 2.0 Flash (Cloud Research), ONNX Intent Classifier |
+| **APIs** | Gmail, Calendar, Drive, Meet, Classroom |
+| **Tools** | chrono-node, react-markdown, remark-gfm |

@@ -413,7 +413,7 @@ Nothing else.
         If none mentioned, return NONE.
         [/INST]
         """
-        course_name_query = call_llm(extract_course_prompt, model=FAST_MODEL).strip()
+        course_name_query = call_llm(extract_course_prompt, model=FAST_MODEL).strip().strip('"').strip("'")
         
         # Need to fetch courses to resolve ID
         courses_res = classroom_service.list_courses()
@@ -422,9 +422,21 @@ Nothing else.
         courses = courses_res.get("courses", [])
         
         target_course = None
-        if course_name_query.upper() != "NONE":
+        
+        # 1. Exact direct match from query text (best for complex course names)
+        task_text_lower = task_text.lower()
+        for c in courses:
+            c_name_lower = c.get("name", "").lower()
+            if c_name_lower and c_name_lower in task_text_lower:
+                target_course = c
+                break
+                
+        # 2. Fallback to LLM extracted matching
+        if not target_course and course_name_query.upper() != "NONE":
+             course_query_lower = course_name_query.lower()
              for c in courses:
-                 if course_name_query.lower() in c.get("name", "").lower():
+                 c_name_lower = c.get("name", "").lower()
+                 if course_query_lower in c_name_lower or c_name_lower in course_query_lower:
                      target_course = c
                      break
         
